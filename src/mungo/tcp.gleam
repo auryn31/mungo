@@ -8,15 +8,17 @@ import gleam/result
 import mug
 
 pub fn connect(host: String, port: Int, timeout: Int) {
-  mug.connect(mug.ConnectionOptions(host, port, timeout))
+  mug.connect(
+    mug.ConnectionOptions(host:, port:, timeout:, ip_version_preference: mug.Ipv4Only),
+  )
 }
 
 pub fn execute(socket: mug.Socket, packet: BitArray, timeout: Int) {
   let selector =
     process.new_selector()
-    |> mug.selecting_tcp_messages(mapper)
+    |> mug.select_tcp_messages(mapper)
 
-  use _ <- result.then(send(socket, packet))
+  use _ <- result.try(send(socket, packet))
   internal_receive(socket, selector, now(), timeout, option.None, <<>>)
 }
 
@@ -35,11 +37,11 @@ fn internal_receive(
   mug.receive_next_packet_as_message(socket)
 
   selector
-  |> process.select(timeout)
+  |> process.selector_receive(within: timeout)
   |> result.replace_error(mug.Timeout)
   |> result.flatten
   |> result.map(fn(packet) {
-    use remaining_size <- result.then(case remaining_size {
+    use remaining_size <- result.try(case remaining_size {
       option.None ->
         case bit_array.byte_size(packet) > 4 {
           True -> {

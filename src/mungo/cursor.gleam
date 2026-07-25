@@ -81,9 +81,11 @@ fn get_more(cursor: Cursor, timeout: Int) -> Result(Cursor, error.Error) {
     #("batchSize", bson.Int32(cursor.batch_size)),
   ]
 
-  process.try_call(cursor.collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  process.call(
+    cursor.collection.client,
+    waiting: timeout,
+    sending: client.Command(cmd, _),
+  )
   |> result.map(fn(reply) {
     case dict.get(reply, "cursor") {
       Ok(bson.Document(reply_cursor)) ->

@@ -28,49 +28,43 @@ pub type Message {
 }
 
 pub fn start(uri: String, timeout: Int) {
-  actor.start_spec(
-    actor.Spec(
-      init: fn() {
-        case connect(uri, timeout) {
-          Ok(client) -> actor.Ready(client, process.new_selector())
-          Error(error) ->
-            case error {
-              error.ConnectionStringError ->
-                actor.Failed("Invalid connection string")
-              error.TCPError(_) -> actor.Failed("TCP connection error")
-              error.ServerError(error.AuthenticationFailed(error)) ->
-                actor.Failed(error)
-              _ -> actor.Failed("Unknown error")
-            }
+  actor.new_with_initialiser(timeout, fn(subj) {
+    case connect(uri, timeout) {
+      Ok(client) ->
+        actor.initialised(client)
+        |> actor.returning(subj)
+        |> Ok
+      Error(err) ->
+        case err {
+          error.ConnectionStringError -> Error("Invalid connection string")
+          error.TCPError(_) -> Error("TCP connection error")
+          error.ServerError(error.AuthenticationFailed(msg)) -> Error(msg)
+          _ -> Error("Unknown error")
         }
-      },
-      init_timeout: timeout,
-      loop: fn(msg: Message, client) {
-        case msg {
-          Command(cmd, reply_with) -> {
-            case execute(client, cmd, timeout) {
-              Ok(#(reply, client)) -> {
-                actor.send(reply_with, Ok(reply))
-                actor.continue(client)
-              }
-
-              Error(error) -> {
-                actor.send(reply_with, Error(error))
-                actor.continue(client)
-              }
-            }
-          }
-
-          GetTimeout(reply_with) -> {
-            actor.send(reply_with, timeout)
+    }
+  })
+  |> actor.on_message(fn(client, msg) {
+    case msg {
+      Command(cmd, reply_with) -> {
+        case execute(client, cmd, timeout) {
+          Ok(#(reply, client)) -> {
+            actor.send(reply_with, Ok(reply))
             actor.continue(client)
           }
-
-          Shutdown -> actor.Stop(process.Normal)
+          Error(err) -> {
+            actor.send(reply_with, Error(err))
+            actor.continue(client)
+          }
         }
-      },
-    ),
-  )
+      }
+      GetTimeout(reply_with) -> {
+        actor.send(reply_with, timeout)
+        actor.continue(client)
+      }
+      Shutdown -> actor.stop()
+    }
+  })
+  |> actor.start
 }
 
 pub opaque type Connection {
@@ -86,18 +80,18 @@ pub type Collection {
 }
 
 fn connect(uri: String, timeout: Int) -> Result(Client, error.Error) {
-  use info <- result.then(parse_connection_string(uri))
+  use info <- result.try(parse_connection_string(uri))
 
   case info {
     #(auth, hosts, db) -> {
-      use connections <- result.then(
+      use connections <- result.try(
         list.try_map(hosts, fn(host) {
-          use socket <- result.then(
+          use socket <- result.try(
             tcp.connect(host.0, host.1, timeout)
-            |> result.map_error(fn(error) { error.TCPError(error) }),
+            |> result.map_error(fn(err) { error.TCPError(connect_error_to_error(err)) }),
           )
 
-          use is_primary <- result.then(is_primary(socket, db, timeout))
+          use is_primary <- result.try(is_primary(socket, db, timeout))
           Ok(Connection(socket, is_primary))
         }),
       )
@@ -118,6 +112,19 @@ fn connect(uri: String, timeout: Int) -> Result(Client, error.Error) {
 
 pub fn collection(client: process.Subject(Message), name: String) -> Collection {
   Collection(name, client)
+}
+
+pub fn execute_command(
+  collection: Collection,
+  cmd: List(#(String, bson.Value)),
+  timeout: Int,
+) -> Result(dict.Dict(String, bson.Value), error.Error) {
+  let reply = process.new_subject()
+  process.send(collection.client, Command(cmd, reply))
+  case process.receive(from: reply, within: timeout) {
+    Ok(reply) -> reply
+    Error(Nil) -> Error(error.ActorError)
+  }
 }
 
 fn execute(
@@ -146,10 +153,10 @@ fn execute(
                 True ->
                   case error.is_not_primary_error(error) {
                     True -> {
-                      use connections <- result.then(
+                      use connections <- result.try(
                         client.connections
                         |> list.try_map(fn(connection) {
-                          use is_primary <- result.then(is_primary(
+                          use is_primary <- result.try(is_primary(
                             connection.socket,
                             client.db,
                             timeout,
@@ -223,6 +230,14 @@ fn execute(
   }
 }
 
+fn connect_error_to_error(err: mug.ConnectError) -> mug.Error {
+  case err {
+    mug.ConnectFailedIpv4(e) -> e
+    mug.ConnectFailedIpv6(e) -> e
+    mug.ConnectFailedBoth(e, _) -> e
+  }
+}
+
 fn is_primary(socket: mug.Socket, db: String, timeout: Int) {
   send_cmd(socket, db, [#("hello", bson.Int32(1))], timeout)
   |> result.map(fn(reply) {
@@ -244,13 +259,13 @@ fn authenticate(
 
   let first = scram.first_message(first_payload)
 
-  use reply <- result.then(send_cmd(socket, auth_source, first, timeout))
+  use reply <- result.try(send_cmd(socket, auth_source, first, timeout))
 
-  use #(server_params, server_payload, cid) <- result.then(
+  use #(server_params, server_payload, cid) <- result.try(
     scram.parse_first_reply(reply),
   )
 
-  use #(second, server_signature) <- result.then(scram.second_message(
+  use #(second, server_signature) <- result.try(scram.second_message(
     server_params,
     first_payload,
     server_payload,
@@ -258,7 +273,7 @@ fn authenticate(
     password,
   ))
 
-  use reply <- result.then(send_cmd(socket, auth_source, second, timeout))
+  use reply <- result.try(send_cmd(socket, auth_source, second, timeout))
 
   case dict.get(reply, "ok") {
     Ok(bson.Double(0.0)) ->
@@ -303,7 +318,7 @@ fn parse_connection_string(uri: String) {
   )
   let uri = string.drop_start(uri, 10)
 
-  use #(auth, rest) <- result.then(case string.split_once(uri, "@") {
+  use #(auth, rest) <- result.try(case string.split_once(uri, "@") {
     Ok(#(auth, rest)) ->
       case string.split_once(auth, ":") {
         Ok(#(username, password)) if username != "" && password != "" ->
@@ -320,11 +335,11 @@ fn parse_connection_string(uri: String) {
     Error(Nil) -> Ok(#(option.None, uri))
   })
 
-  use #(hosts, db_and_options) <- result.then(
+  use #(hosts, db_and_options) <- result.try(
     string.split_once(rest, "/")
     |> result.replace_error(error.ConnectionStringError),
   )
-  use hosts <- result.then(
+  use hosts <- result.try(
     hosts
     |> string.split(",")
     |> list.map(fn(host) {
@@ -338,7 +353,7 @@ fn parse_connection_string(uri: String) {
       |> result.map(fn(host) {
         case string.split_once(host, ":") {
           Ok(#(host, port)) -> {
-            use port <- result.then(
+            use port <- result.try(
               int.parse(port)
               |> result.replace_error(error.ConnectionStringError),
             )
@@ -353,7 +368,7 @@ fn parse_connection_string(uri: String) {
 
   case string.split(db_and_options, "?") {
     [db] if db != "" -> {
-      use db <- result.then(
+      use db <- result.try(
         uri.percent_decode(db)
         |> result.replace_error(error.ConnectionStringError),
       )
@@ -366,7 +381,7 @@ fn parse_connection_string(uri: String) {
     }
 
     [db, "authSource=" <> auth_source] if db != "" -> {
-      use db <- result.then(
+      use db <- result.try(
         uri.percent_decode(db)
         |> result.replace_error(error.ConnectionStringError),
       )

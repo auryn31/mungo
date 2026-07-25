@@ -2,7 +2,6 @@
 
 import gleam/deque
 import gleam/dict
-import gleam/erlang/process
 import gleam/list
 import gleam/result
 
@@ -191,13 +190,7 @@ pub fn to_cursor(pipeline: Pipeline) {
       },
     )
 
-  process.try_call(
-    pipeline.collection.client,
-    client.Command(body, _),
-    pipeline.timeout,
-  )
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(pipeline.collection, body, pipeline.timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "cursor") {
       Ok(bson.Document(cursor)) ->

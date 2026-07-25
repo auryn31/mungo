@@ -1,5 +1,4 @@
 import gleam/dict
-import gleam/erlang/process
 import gleam/list
 import gleam/option
 import gleam/pair
@@ -134,9 +133,7 @@ pub fn delete_many(
 
 pub fn count_all(collection: client.Collection, timeout: Int) {
   let cmd = [#("count", bson.String(collection.name))]
-  process.try_call(collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, cmd, timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "n") {
       Ok(bson.Int32(n)) -> Ok(n)
@@ -156,9 +153,7 @@ pub fn count(
     #("query", bson.Document(dict.from_list(filter))),
   ]
 
-  process.try_call(collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, cmd, timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "n") {
       Ok(bson.Int32(n)) -> Ok(n)
@@ -204,9 +199,7 @@ pub fn insert_many(
     #("documents", bson.Array(docs)),
   ]
 
-  process.try_call(collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, cmd, timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "n"), dict.get(reply, "writeErrors") {
       _, Ok(bson.Array(errors)) ->
@@ -259,9 +252,7 @@ fn find(
       },
     )
 
-  process.try_call(collection.client, client.Command(body, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, body, timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "cursor") {
       Ok(bson.Document(cursor)) ->
@@ -317,9 +308,7 @@ fn update(
     #("updates", bson.Array([update])),
   ]
 
-  process.try_call(collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, cmd, timeout)
   |> result.map(fn(reply) {
     case
       dict.get(reply, "n"),
@@ -380,9 +369,7 @@ fn delete(
     ),
   ]
 
-  process.try_call(collection.client, client.Command(cmd, _), timeout)
-  |> result.replace_error(error.ActorError)
-  |> result.flatten
+  client.execute_command(collection, cmd, timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "n"), dict.get(reply, "writeErrors") {
       Ok(bson.Int32(n)), _ -> Ok(n)

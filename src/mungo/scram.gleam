@@ -57,7 +57,7 @@ pub fn parse_first_reply(reply: dict.Dict(String, bson.Value)) {
       Ok(bson.Binary(bson.Generic(data))),
       _
     -> {
-      use data <- result.then(
+      use data <- result.try(
         generic.to_string(data)
         |> result.replace_error(
           error.ServerError(error.AuthenticationFailed(
@@ -110,7 +110,7 @@ pub fn second_message(
 ) {
   let #(rnonce, salt, iterations) = server_params
 
-  use salt <- result.then(
+  use salt <- result.try(
     bit_array.base64_decode(salt)
     |> result.replace_error(
       error.ServerError(error.AuthenticationFailed(
@@ -186,7 +186,7 @@ pub fn parse_second_reply(
       Ok(bson.Boolean(True)),
       Ok(bson.Binary(bson.Generic(data)))
     -> {
-      use data <- result.then(
+      use data <- result.try(
         generic.to_string(data)
         |> result.replace_error(
           error.ServerError(error.AuthenticationFailed("")),
@@ -195,7 +195,7 @@ pub fn parse_second_reply(
 
       case parse_payload(data) {
         Ok([#("v", data)]) -> {
-          use received_signature <- result.then(
+          use received_signature <- result.try(
             bit_array.base64_decode(data)
             |> result.replace_error(
               error.ServerError(error.AuthenticationFailed("")),
