@@ -3,7 +3,7 @@
 
 packages = [
   { name = "birl", version = "1.9.0", build_tools = ["gleam"], requirements = ["gleam_regexp", "gleam_stdlib", "gleam_time", "ranger"], otp_app = "birl", source = "hex", outer_checksum = "9924A2C3EECD33A5C94CD6859570261F2620435C54DAC5F2B00E5E6C806EEC6F" },
-  { name = "bison", version = "1.7.0", build_tools = ["gleam"], requirements = ["birl", "gleam_deque", "gleam_json", "gleam_stdlib", "gleam_yielder"], source = "local", path = "../bison" },
+  { name = "bison", version = "1.7.0", build_tools = ["gleam"], requirements = ["birl", "gleam_deque", "gleam_json", "gleam_stdlib", "gleam_yielder"], source = "git", repo = "https://github.com/auryn31/bison.git", commit = "9e3a7affca6e2277e9a0483842175b8d02d0fa12" },
   { name = "cowl", version = "1.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "cowl", source = "hex", outer_checksum = "7849E7C789D7228243A4253138FC883720A0BB44AEF406102328CADC64C3CA2B" },
   { name = "envie", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "envie", source = "hex", outer_checksum = "E7EBA39310F32A40BF3EDDD7CD9C7A2BC289909983D357411C22873415BC322A" },
   { name = "gleam_crypto", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "2DE9E4EF53CF6FEE049D4F765731F7178F7A11AEFAE00EEE63BF7536B354AD3F" },
@@ -23,7 +23,7 @@ packages = [
 ]
 
 [requirements]
-bison = { path = "../bison" }
+bison = { git = "https://github.com/auryn31/bison.git", ref = "main" }
 gleam_crypto = { version = "~> 1.6" }
 gleam_deque = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = "~> 1.3" }
