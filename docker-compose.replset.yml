@@ -1,0 +1,50 @@
+services:
+  mongo1:
+    image: mongo:7
+    container_name: mungo-rs1
+    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - rs1:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo2:
+    image: mongo:7
+    container_name: mungo-rs2
+    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
+    ports:
+      - "27018:27017"
+    volumes:
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - rs2:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo3:
+    image: mongo:7
+    container_name: mungo-rs3
+    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
+    ports:
+      - "27019:27017"
+    volumes:
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - rs3:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rs1:
+  rs2:
+  rs3:

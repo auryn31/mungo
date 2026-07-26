@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
@@ -17,6 +18,7 @@ import mungo/cursor
 import mungo/session
 import mungo/bulk
 import mungo/admin
+import mungo/topology
 import testcontainer
 import testcontainer/container
 import testcontainer/error as tc_error
@@ -2075,6 +2077,199 @@ pub fn find_and_modify_test() {
       }
       _ -> panic as "Expected document"
     }
+    Ok(Nil)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Replica Set / Cluster Tests
+// ---------------------------------------------------------------------------
+
+const replset_url = "mongodb://root:root@localhost:27017,localhost:27018,localhost:27019/mungo_test?authSource=admin&replicaSet=mungo-rs"
+
+fn with_replset(
+  name: String,
+  f: fn(client.Collection) -> Result(a, tc_error.Error),
+) -> Result(a, tc_error.Error) {
+  let assert Ok(started) = client.start(replset_url, 2, timeout)
+  let coll = client.collection(started.data, name)
+  f(coll)
+}
+
+pub fn replset_insert_and_read_test() {
+  with_replset("t_replset_insert", fn(coll) {
+    let doc = [#("val", bson.String("hello rs"))]
+    let assert Ok(id) = crud.insert_one(coll, doc, timeout)
+    let fields = find_doc(coll, [#("_id", id)])
+    should.equal(dict.get(fields, "val"), Ok(bson.String("hello rs")))
+    Ok(Nil)
+  })
+}
+
+pub fn replset_count_test() {
+  with_replset("t_replset_count", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(2))], timeout)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 2)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_find_many_test() {
+  with_replset("t_replset_findmany", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(2))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(3))], timeout)
+    let assert Ok(c) = crud.find_all(coll, [], timeout)
+    let docs = cursor.to_list(c, timeout)
+    should.equal(list.length(docs), 3)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_update_one_test() {
+  with_replset("t_replset_updateone", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(result) =
+      crud.update_one(
+        coll,
+        [#("x", bson.Int32(1))],
+        [#("$set", bson.Document(dict.from_list([#("x", bson.Int32(10))])))],
+        [],
+        timeout,
+      )
+    should.equal(result.matched, 1)
+    should.equal(result.modified, 1)
+    let fields = find_doc(coll, [#("x", bson.Int32(10))])
+    should.equal(dict.get(fields, "x"), Ok(bson.Int32(10)))
+    Ok(Nil)
+  })
+}
+
+pub fn replset_delete_one_test() {
+  with_replset("t_replset_deleteone", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(2))], timeout)
+    let assert Ok(n) = crud.delete_one(coll, [#("x", bson.Int32(1))], timeout)
+    should.equal(n, 1)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 1)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_aggregation_test() {
+  with_replset("t_replset_agg", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("inactive"))], timeout)
+    let assert Ok(c) =
+      aggregation.aggregate(coll, [], timeout)
+      |> aggregation.match([#("status", bson.String("active"))])
+      |> aggregation.group([
+        #("_id", bson.Null),
+        #("count", bson.Document(dict.from_list([#("$sum", bson.Int32(1))]))),
+      ])
+      |> aggregation.to_cursor
+    let results = cursor.to_list(c, timeout)
+    should.equal(list.length(results), 1)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_bulk_insert_test() {
+  with_replset("t_replset_bulk", fn(coll) {
+    let ops = [
+      bulk.InsertOne([#("x", bson.Int32(1))]),
+      bulk.InsertOne([#("x", bson.Int32(2))]),
+      bulk.InsertOne([#("x", bson.Int32(3))]),
+    ]
+    let assert Ok(result) = bulk.bulk_write(coll, ops, True, timeout)
+    should.equal(result.inserted, 3)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 3)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_distinct_test() {
+  with_replset("t_replset_distinct", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(values) = crud.distinct(coll, "color", [], timeout)
+    should.equal(list.length(values), 2)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_find_and_modify_test() {
+  with_replset("t_replset_fam", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(old) =
+      crud.find_and_modify(
+        coll,
+        [#("x", bson.Int32(1))],
+        option.Some([#("$set", bson.Document(dict.from_list([#("x", bson.Int32(99))])))]),
+        option.None,
+        [],
+        False,
+        False,
+        False,
+        timeout,
+      )
+    case old {
+      option.Some(bson.Document(fields)) ->
+        should.equal(dict.get(fields, "x"), Ok(bson.Int32(1)))
+      _ -> panic as "Expected old document"
+    }
+    let fields = find_doc(coll, [#("x", bson.Int32(99))])
+    should.equal(dict.get(fields, "x"), Ok(bson.Int32(99)))
+    Ok(Nil)
+  })
+}
+
+pub fn replset_list_databases_test() {
+  with_replset("t_replset_listdb", fn(coll) {
+    let assert Ok(dbs) = admin.list_databases(coll.client, timeout)
+    should.be_true(dbs != [])
+    let db_names = list.map(dbs, fn(db) { db.name })
+    should.be_true(list.contains(db_names, "admin"))
+    Ok(Nil)
+  })
+}
+
+pub fn replset_list_collections_test() {
+  with_replset("t_replset_listcol", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("a", bson.Int32(1))], timeout)
+    let db_coll = client.Collection("mungo_test", "mungo_test", coll.client)
+    let assert Ok(cols) = admin.list_collections(db_coll, timeout)
+    should.be_true(cols != [])
+    should.be_true(list.contains(cols, "t_replset_listcol"))
+    Ok(Nil)
+  })
+}
+
+pub fn replset_secondary_read_preference_test() {
+  with_replset("t_replset_secondary", fn(coll) {
+    client.set_read_preference(coll.client, topology.Secondary)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    // Give the secondary a moment to replicate
+    process.sleep(1000)
+    // With Secondary preference, reads should still work via secondaries
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 1)
+    Ok(Nil)
+  })
+}
+
+pub fn replset_nearest_read_preference_test() {
+  with_replset("t_replset_nearest", fn(coll) {
+    client.set_read_preference(coll.client, topology.Nearest)
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 1)
     Ok(Nil)
   })
 }
