@@ -115,10 +115,10 @@ let users = mungo.collection(started, "users")
 - `crud.Upsert`, `crud.Sort`, `crud.Skip`, `crud.Limit` need module prefix
 
 ### Connection Pooling
-- `Client` holds: `db`, `connections: List(Connection)`, `next_index: Int`, `pool_size: Int`, `use_tls: Bool`
+- `Client` holds: `db`, `connections`, `next_index`, `pool_size`, `use_tls`, `topology`, `replica_set_name`, `read_preference`
 - `Connection` holds: `socket: DriverSocket`, `primary: Bool`, `host: String`, `port: Int`
 - `DriverSocket` = `TcpSocket(mug.Socket) | TlsSocket(tls_module.TlsSocket)`
-- Round-robin selection: `index % list.length(primary_connections)`
+- Round-robin selection: `index % list.length(candidate_connections)`
 - `refresh_connections` rechecks `isPrimary` on all connections during failover
 
 ### TLS Support
@@ -126,6 +126,25 @@ let users = mungo.collection(started, "users")
 - Connection string: `mongodb://host/db?ssl=true` enables TLS
 - Query parameter parsing: `?ssl=true`, `?ssl=1`, `?authSource=admin&ssl=true`
 - `tls.gleam` module mirrors `tcp.gleam` but uses SSL FFI
+
+### Cluster/Replica Set Support
+- `mungo/topology.gleam`: TopologyType, ServerDescription, Topology, ReadPreference
+- `topology.hello` command: `#("hello", bson.Int32(1))` returns `isWritablePrimary`, `isSecondary`, `setName`, `tags`
+- Connection string: `?replicaSet=rsName` parsed and stored in Client
+- Topology monitoring: 10s interval polling via `process.spawn` + `process.sleep`
+- Read preferences: Primary, PrimaryPreferred, Secondary, SecondaryPreferred, Nearest
+- `execute` function routes based on read_preference: filters connections by primary/secondary status
+- `poll_topology` updates connection `primary` flag based on hello responses
+- `set_read_preference(client, pref)` sends message to actor to change routing
+
+### Bulk Operations (Client-Side Batching)
+- `bulkWrite` server command is MongoDB 8.0+ only
+- Implemented client-side batching: groups consecutive same-type operations
+- Inserts use `insert` command with documents array
+- Updates use `update` command with updates array (q, u, multi, upsert)
+- Deletes use `delete` command with deletes array (q, limit)
+- Batch order matters: `[op, ..current]` prepends (reverses order), so `list.reverse` in collectors is needed
+- `group_by_type` returns batches in flush order — do NOT reverse at the end
 
 ### Git / Dependencies
 - Bison is a git dependency: `{ git = "https://github.com/auryn31/bison.git", ref = "main" }`
@@ -138,25 +157,20 @@ let users = mungo.collection(started, "users")
 - All deps bumped to latest versions
 - README fully rewritten with 7 sections
 - bison fork migrated to stdlib 1.x (all tests pass)
-- mungo builds clean, all 137 tests pass
+- mungo builds clean, all 155 tests pass
 - Connection pooling implemented (pool_size param, round-robin)
-- Bulk operations module created (`mungo/bulk.gleam`)
+- Bulk operations module created (`mungo/bulk.gleam`) — client-side batching
 - Admin module created (`mungo/admin.gleam` — listDatabases, listCollections, dropDatabase)
 - CRUD extended: distinct, findAndModify, drop, createIndex, dropIndex
 - TLS support: FFI + module + connection string parsing
 - Bison switched from local path to git dependency
-
-### In Progress
-- `client.gleam` `send_cmd` no longer takes `use_tls` — socket variant determines path
-- `is_primary` still takes `use_tls` param but ignores it (kept for `refresh_connections` signature consistency)
-
-### Not Started
 - Transactions (session support, lsid + txnNumber in commands)
 - Change streams (watch command, cursor-based)
-- Cluster/replica set support (topology monitoring)
-- Integration tests for new features (bulk, admin, distinct, findAndModify, TLS)
-- Update README roadmap checkboxes
-- Commit and push all new features
+- Cluster/replica set support (topology monitoring, read preferences)
+- 155 tests passing (52 unit + 103 integration)
+
+### Not Started
+- Integration tests for transactions/change streams (need replica set container)
 
 ## Commands
 ```sh
