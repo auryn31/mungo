@@ -5,9 +5,23 @@ import mungo/bulk
 import mungo/admin
 import mungo/session
 import mungo/change_stream
+import mungo/topology
 
 pub type Message =
   client.Message
+
+pub type ReadPreference =
+  topology.ReadPreference
+
+pub const primary = topology.Primary
+
+pub const primary_preferred = topology.PrimaryPreferred
+
+pub const secondary = topology.Secondary
+
+pub const secondary_preferred = topology.SecondaryPreferred
+
+pub const nearest = topology.Nearest
 
 /// The connection uri must specify the database
 pub fn start(uri, pool_size, timeout) {
@@ -206,4 +220,8 @@ pub fn change_stream_next(stream, timeout) {
 
 pub fn change_stream_to_list(stream, timeout) {
   change_stream.to_list(stream, timeout)
+}
+
+pub fn set_read_preference(client, preference) {
+  client.set_read_preference(client, preference)
 }

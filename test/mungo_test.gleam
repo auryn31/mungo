@@ -1,8 +1,11 @@
 import bison/bson
+import gleam/dict
 import gleam/list
+import gleam/option
 import gleeunit
 import gleeunit/should
 import mungo/error
+import mungo/topology
 
 pub fn main() {
   gleeunit.main()
@@ -334,4 +337,184 @@ pub fn all_not_primary_errors_are_retriable_test() {
     error.is_not_primary_error(err)
     |> should.be_true
   })
+}
+
+// ---- Topology tests ----
+
+pub fn topology_empty_test() {
+  let t = topology.empty()
+  should.equal(t.topology_type, topology.Unknown)
+  should.equal(t.servers, [])
+}
+
+pub fn parse_hello_reply_primary_test() {
+  let reply = dict.from_list([
+    #("ok", bson.Double(1.0)),
+    #("isWritablePrimary", bson.Boolean(True)),
+    #("setName", bson.String("rs0")),
+  ])
+  let desc = topology.parse_hello_reply(reply, "host1", 27017)
+  should.equal(desc.server_type, topology.RsPrimary)
+  should.equal(desc.is_healthy, True)
+  should.equal(desc.host, "host1")
+  should.equal(desc.port, 27017)
+  should.equal(desc.replica_set_name, option.Some("rs0"))
+}
+
+pub fn parse_hello_reply_secondary_test() {
+  let reply = dict.from_list([
+    #("ok", bson.Double(1.0)),
+    #("isWritablePrimary", bson.Boolean(False)),
+    #("isSecondary", bson.Boolean(True)),
+    #("setName", bson.String("rs0")),
+  ])
+  let desc = topology.parse_hello_reply(reply, "host2", 27018)
+  should.equal(desc.server_type, topology.RsSecondary)
+  should.equal(desc.is_healthy, True)
+}
+
+pub fn parse_hello_reply_standalone_test() {
+  let reply = dict.from_list([
+    #("ok", bson.Double(1.0)),
+    #("isWritablePrimary", bson.Boolean(True)),
+  ])
+  let desc = topology.parse_hello_reply(reply, "localhost", 27017)
+  should.equal(desc.server_type, topology.RsPrimary)
+}
+
+pub fn parse_hello_reply_unhealthy_test() {
+  let reply = dict.from_list([
+    #("ok", bson.Double(0.0)),
+    #("isWritablePrimary", bson.Boolean(False)),
+  ])
+  let desc = topology.parse_hello_reply(reply, "host1", 27017)
+  should.equal(desc.is_healthy, False)
+}
+
+pub fn update_topology_adds_server_test() {
+  let t = topology.empty()
+  let desc = topology.ServerDescription(
+    host: "host1",
+    port: 27017,
+    server_type: topology.RsPrimary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, desc)
+  should.equal(list.length(t.servers), 1)
+  should.equal(t.topology_type, topology.ReplicaSetWithPrimary)
+  should.equal(t.set_name, option.Some("rs0"))
+}
+
+pub fn update_topology_replaces_server_test() {
+  let t = topology.empty()
+  let desc1 = topology.ServerDescription(
+    host: "host1",
+    port: 27017,
+    server_type: topology.RsPrimary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, desc1)
+  let desc2 = topology.ServerDescription(
+    host: "host1",
+    port: 27017,
+    server_type: topology.RsSecondary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, desc2)
+  should.equal(list.length(t.servers), 1)
+}
+
+pub fn select_server_primary_test() {
+  let t = topology.empty()
+  let primary = topology.ServerDescription(
+    host: "host1",
+    port: 27017,
+    server_type: topology.RsPrimary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let secondary = topology.ServerDescription(
+    host: "host2",
+    port: 27018,
+    server_type: topology.RsSecondary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, primary)
+  let t = topology.update_topology(t, secondary)
+
+  let selected = topology.select_server(t, topology.Primary)
+  case selected {
+    option.Some(s) -> should.equal(s.host, "host1")
+    option.None -> panic as "Expected a server"
+  }
+}
+
+pub fn select_server_secondary_test() {
+  let t = topology.empty()
+  let primary = topology.ServerDescription(
+    host: "host1",
+    port: 27017,
+    server_type: topology.RsPrimary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let secondary = topology.ServerDescription(
+    host: "host2",
+    port: 27018,
+    server_type: topology.RsSecondary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, primary)
+  let t = topology.update_topology(t, secondary)
+
+  let selected = topology.select_server(t, topology.Secondary)
+  case selected {
+    option.Some(s) -> should.equal(s.host, "host2")
+    option.None -> panic as "Expected a server"
+  }
+}
+
+pub fn select_server_primary_preferred_fallback_test() {
+  let t = topology.empty()
+  let secondary = topology.ServerDescription(
+    host: "host2",
+    port: 27018,
+    server_type: topology.RsSecondary,
+    replica_set_name: option.Some("rs0"),
+    is_healthy: True,
+    tags: dict.new(),
+  )
+  let t = topology.update_topology(t, secondary)
+
+  let selected = topology.select_server(t, topology.PrimaryPreferred)
+  case selected {
+    option.Some(s) -> should.equal(s.host, "host2")
+    option.None -> panic as "Expected a server"
+  }
+}
+
+pub fn parse_hello_reply_with_tags_test() {
+  let tags = dict.from_list([#("dc", "us-east"), #("rack", "1")])
+  let tags_bson = dict.map_values(tags, fn(_k, v) { bson.String(v) })
+  let reply = dict.from_list([
+    #("ok", bson.Double(1.0)),
+    #("isWritablePrimary", bson.Boolean(True)),
+    #("setName", bson.String("rs0")),
+    #("tags", bson.Document(tags_bson)),
+  ])
+  let desc = topology.parse_hello_reply(reply, "host1", 27017)
+  should.equal(dict.get(desc.tags, "dc"), Ok("us-east"))
+  should.equal(dict.get(desc.tags, "rack"), Ok("1"))
 }

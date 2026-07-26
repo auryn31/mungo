@@ -14,6 +14,7 @@ import mungo/error
 import mungo/scram
 import mungo/tcp
 import mungo/tls as tls_module
+import mungo/topology
 
 import bison.{decode, encode_list}
 import bison/bson
@@ -33,16 +34,23 @@ pub type Message {
     BitArray,
     Int,
   )
+  SetReadPreference(topology.ReadPreference)
+  PollTopology
 }
 
 pub fn start(uri: String, pool_size: Int, timeout: Int) {
   let pool_size = int.max(pool_size, 1)
   actor.new_with_initialiser(timeout, fn(subj) {
     case connect(uri, pool_size, timeout) {
-      Ok(client) ->
+      Ok(client) -> {
+        let topology_interval = 10_000
+        process.spawn(fn() {
+          do_topology_poll_loop(subj, topology_interval)
+        })
         actor.initialised(client)
         |> actor.returning(subj)
         |> Ok
+      }
       Error(err) ->
         case err {
           error.ConnectionStringError -> Error("Invalid connection string")
@@ -89,10 +97,36 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
           }
         }
       }
+      SetReadPreference(pref) -> {
+        let new_client = Client(
+          client.db,
+          client.connections,
+          client.next_index,
+          client.pool_size,
+          client.use_tls,
+          client.topology,
+          client.replica_set_name,
+          pref,
+        )
+        actor.continue(new_client)
+      }
+      PollTopology -> {
+        let new_client = poll_topology(client, timeout)
+        actor.continue(new_client)
+      }
       Shutdown -> actor.stop()
     }
   })
   |> actor.start
+}
+
+fn do_topology_poll_loop(
+  subj: process.Subject(Message),
+  interval: Int,
+) {
+  process.send(subj, PollTopology)
+  process.sleep(interval)
+  do_topology_poll_loop(subj, interval)
 }
 
 pub type DriverSocket {
@@ -111,6 +145,9 @@ pub opaque type Client {
     next_index: Int,
     pool_size: Int,
     use_tls: Bool,
+    topology: topology.Topology,
+    replica_set_name: option.Option(String),
+    read_preference: topology.ReadPreference,
   )
 }
 
@@ -122,7 +159,7 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
   use info <- result.try(parse_connection_string(uri))
 
   case info {
-    #(auth, hosts, db, use_tls) -> {
+    #(auth, hosts, db, use_tls, replica_set_name) -> {
       use connections <- result.try(
         list.try_map(hosts, fn(host) {
           list.repeat(Nil, pool_size)
@@ -141,21 +178,57 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
                 })
             })
 
-            use is_primary <- result.try(is_primary(socket, db, timeout, use_tls))
-            Ok(Connection(socket, is_primary, host.0, host.1))
+            use hello_reply <- result.try(send_cmd(socket, db, [#("hello", bson.Int32(1))], timeout))
+            let server_desc = topology.parse_hello_reply(hello_reply, host.0, host.1)
+            Ok(Connection(socket, server_desc.server_type == topology.RsPrimary, host.0, host.1))
           })
         })
         |> result.map(list.flatten),
       )
 
+      let initial_topo =
+        list.fold(connections, topology.empty(), fn(topo, conn) {
+          let server_desc = topology.ServerDescription(
+            host: conn.host,
+            port: conn.port,
+            server_type: case conn.primary {
+              True -> topology.RsPrimary
+              False -> topology.Standalone
+            },
+            replica_set_name: replica_set_name,
+            is_healthy: True,
+            tags: dict.new(),
+          )
+          topology.update_topology(topo, server_desc)
+        })
+
       case auth {
-        option.None -> Ok(Client(db, connections, 0, pool_size, use_tls))
+        option.None ->
+          Ok(Client(
+            db,
+            connections,
+            0,
+            pool_size,
+            use_tls,
+            initial_topo,
+            replica_set_name,
+            topology.Primary,
+          ))
         option.Some(#(username, password, auth_source)) -> {
           list.try_each(
             list.map(connections, fn(connection) { connection.socket }),
             authenticate(_, username, password, auth_source, timeout, use_tls),
           )
-          |> result.replace(Client(db, connections, 0, pool_size, use_tls))
+          |> result.replace(Client(
+            db,
+            connections,
+            0,
+            pool_size,
+            use_tls,
+            initial_topo,
+            replica_set_name,
+            topology.Primary,
+          ))
         }
       }
     }
@@ -168,6 +241,22 @@ pub fn collection(client: process.Subject(Message), name: String) -> Collection 
 
 pub fn collection_on_db(client: process.Subject(Message), name: String, db: String) -> Collection {
   Collection(name, db, client)
+}
+
+pub fn set_read_preference(
+  client: process.Subject(Message),
+  preference: topology.ReadPreference,
+) {
+  process.send(client, SetReadPreference(preference))
+}
+
+pub fn get_topology(
+  client: process.Subject(Message),
+  _timeout: Int,
+) -> topology.Topology {
+  let _reply = process.new_subject()
+  process.send(client, PollTopology)
+  topology.empty()
 }
 
 pub fn execute_command(
@@ -212,27 +301,41 @@ fn execute(
   timeout: Int,
 ) -> Result(#(dict.Dict(String, bson.Value), Client), error.Error) {
   case client {
-    Client(name, connections, index, pool_size, use_tls) -> {
-      let primary_connections =
-        list.filter(connections, fn(connection) { connection.primary })
+    Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) -> {
+      let candidate_connections = case pref {
+        topology.Primary -> list.filter(connections, fn(c) { c.primary })
+        topology.PrimaryPreferred -> {
+          let primaries = list.filter(connections, fn(c) { c.primary })
+          case primaries {
+            [_, ..] -> primaries
+            [] -> connections
+          }
+        }
+        topology.Secondary -> list.filter(connections, fn(c) { !c.primary })
+        topology.SecondaryPreferred -> {
+          let secondaries = list.filter(connections, fn(c) { !c.primary })
+          case secondaries {
+            [_, ..] -> secondaries
+            [] -> list.filter(connections, fn(c) { c.primary })
+          }
+        }
+        topology.Nearest -> connections
+      }
 
-      case list.is_empty(primary_connections) {
+      case list.is_empty(candidate_connections) {
         True -> Error(error.ActorError)
         False -> {
-          let count = list.length(primary_connections)
-          let current_index = case count > 0 {
-            True -> index % count
-            False -> 0
-          }
+          let count = list.length(candidate_connections)
+          let current_index = index % count
           use connection <- result.try(
-            list.drop(primary_connections, current_index)
+            list.drop(candidate_connections, current_index)
             |> list.first
             |> result.replace_error(error.ActorError),
           )
-          let assert Connection(socket, True, _, _) = connection
+          let Connection(socket, _, _, _) = connection
 
           let next_index = index + 1
-          let client = Client(name, connections, next_index, pool_size, use_tls)
+          let client = Client(name, connections, next_index, pool_size, use_tls, topo, replica_set_name, pref)
 
           case send_cmd(socket, name, cmd, timeout) {
             Ok(reply) ->
@@ -325,7 +428,7 @@ fn execute(
 }
 
 fn find_primary(client: Client) -> Result(#(DriverSocket, Client), error.Error) {
-  let Client(_, connections, _, _, _) = client
+  let Client(_, connections, _, _, _, _, _, _) = client
   let primary_connections =
     list.filter(connections, fn(connection) { connection.primary })
 
@@ -335,11 +438,50 @@ fn find_primary(client: Client) -> Result(#(DriverSocket, Client), error.Error) 
   }
 }
 
+fn poll_topology(client: Client, timeout: Int) -> Client {
+  let Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) =
+    client
+
+  let result =
+    list.fold(connections, #(topology.empty(), []), fn(acc, connection) {
+      let #(topo, conns) = acc
+      case send_cmd(connection.socket, name, [#("hello", bson.Int32(1))], timeout) {
+        Ok(reply) -> {
+          let server_desc = topology.parse_hello_reply(reply, connection.host, connection.port)
+          let new_topo = topology.update_topology(topo, server_desc)
+          let new_conn = Connection(
+            connection.socket,
+            server_desc.server_type == topology.RsPrimary,
+            connection.host,
+            connection.port,
+          )
+          #(new_topo, list.append(conns, [new_conn]))
+        }
+        Error(_) -> {
+          let new_conn = Connection(
+            connection.socket,
+            False,
+            connection.host,
+            connection.port,
+          )
+          #(topo, list.append(conns, [new_conn]))
+        }
+      }
+    })
+
+  let new_topo = case topo.topology_type {
+    topology.Unknown -> result.0
+    _ -> topo
+  }
+
+  Client(name, result.1, index, pool_size, use_tls, new_topo, replica_set_name, pref)
+}
+
 fn refresh_connections(
   client: Client,
   timeout: Int,
 ) -> Result(Client, error.Error) {
-  let Client(name, connections, index, pool_size, use_tls) = client
+  let Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) = client
   use refreshed <- result.try(
     list.try_map(connections, fn(connection) {
       use is_primary <- result.try(is_primary(
@@ -351,7 +493,7 @@ fn refresh_connections(
       Ok(Connection(connection.socket, is_primary, connection.host, connection.port))
     }),
   )
-  Ok(Client(name, refreshed, index, pool_size, use_tls))
+  Ok(Client(name, refreshed, index, pool_size, use_tls, topo, replica_set_name, pref))
 }
 
 fn connect_error_to_error(err: mug.ConnectError) -> mug.Error {
@@ -516,6 +658,7 @@ fn parse_connection_string(uri: String) {
         hosts,
         db,
         False,
+        option.None,
       ))
     }
 
@@ -542,12 +685,17 @@ fn parse_connection_string(uri: String) {
         Ok(source) -> source
         Error(Nil) -> db
       }
+      let replica_set_name = case dict.get(params, "replicaSet") {
+        Ok(name) -> option.Some(name)
+        Error(Nil) -> option.None
+      }
       Ok(#(
         auth
           |> option.map(fn(auth) { #(auth.0, auth.1, auth_source) }),
         hosts,
         db,
         use_tls,
+        replica_set_name,
       ))
     }
 

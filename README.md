@@ -31,7 +31,7 @@ gleam add mungo
 - [x] support mongodb cursors
 - [x] support connection pooling
 - [x] support bulk operations
-- [ ] support clusters
+- [x] support clusters
 - [x] support tls
 - [x] support transactions
 - [x] support change streams
