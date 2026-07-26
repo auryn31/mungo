@@ -17,6 +17,7 @@ import mungo/tls as tls_module
 
 import bison.{decode, encode_list}
 import bison/bson
+import bison/uuid
 import mug
 
 pub type Message {
@@ -25,6 +26,12 @@ pub type Message {
   Command(
     List(#(String, bson.Value)),
     process.Subject(Result(dict.Dict(String, bson.Value), error.Error)),
+  )
+  SessionCommand(
+    List(#(String, bson.Value)),
+    process.Subject(Result(dict.Dict(String, bson.Value), error.Error)),
+    BitArray,
+    Int,
   )
 }
 
@@ -63,6 +70,25 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
         actor.send(reply_with, timeout)
         actor.continue(client)
       }
+      SessionCommand(cmd, reply_with, session_id, txn_number) -> {
+        let cmd = case uuid.from_bit_array(session_id) {
+          Ok(uid) ->
+            cmd
+            |> list.key_set("lsid", bson.Document(dict.from_list([#("id", bson.Binary(bson.UUID(uid)))])))
+            |> list.key_set("txnNumber", bson.Int64(txn_number))
+          Error(Nil) -> cmd
+        }
+        case execute(client, cmd, timeout) {
+          Ok(#(reply, client)) -> {
+            actor.send(reply_with, Ok(reply))
+            actor.continue(client)
+          }
+          Error(err) -> {
+            actor.send(reply_with, Error(err))
+            actor.continue(client)
+          }
+        }
+      }
       Shutdown -> actor.stop()
     }
   })
@@ -89,7 +115,7 @@ pub opaque type Client {
 }
 
 pub type Collection {
-  Collection(name: String, client: process.Subject(Message))
+  Collection(name: String, db: String, client: process.Subject(Message))
 }
 
 fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Error) {
@@ -137,7 +163,11 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
 }
 
 pub fn collection(client: process.Subject(Message), name: String) -> Collection {
-  Collection(name, client)
+  Collection(name, "", client)
+}
+
+pub fn collection_on_db(client: process.Subject(Message), name: String, db: String) -> Collection {
+  Collection(name, db, client)
 }
 
 pub fn execute_command(
@@ -146,7 +176,30 @@ pub fn execute_command(
   timeout: Int,
 ) -> Result(dict.Dict(String, bson.Value), error.Error) {
   let reply = process.new_subject()
+  let cmd = case collection.db {
+    "" -> cmd
+    db -> list.key_set(cmd, "$db", bson.String(db))
+  }
   process.send(collection.client, Command(cmd, reply))
+  case process.receive(from: reply, within: timeout) {
+    Ok(reply) -> reply
+    Error(Nil) -> Error(error.ActorError)
+  }
+}
+
+pub fn execute_command_with_session(
+  collection: Collection,
+  cmd: List(#(String, bson.Value)),
+  session_id: BitArray,
+  txn_number: Int,
+  timeout: Int,
+) -> Result(dict.Dict(String, bson.Value), error.Error) {
+  let reply = process.new_subject()
+  let cmd = case collection.db {
+    "" -> cmd
+    db -> list.key_set(cmd, "$db", bson.String(db))
+  }
+  process.send(collection.client, SessionCommand(cmd, reply, session_id, txn_number))
   case process.receive(from: reply, within: timeout) {
     Ok(reply) -> reply
     Error(Nil) -> Error(error.ActorError)
@@ -171,9 +224,12 @@ fn execute(
             True -> index % count
             False -> 0
           }
-          let assert Ok(Connection(socket, True, _, _)) =
+          use connection <- result.try(
             list.drop(primary_connections, current_index)
             |> list.first
+            |> result.replace_error(error.ActorError),
+          )
+          let assert Connection(socket, True, _, _) = connection
 
           let next_index = index + 1
           let client = Client(name, connections, next_index, pool_size, use_tls)
@@ -186,20 +242,48 @@ fn execute(
                 dict.get(reply, "code")
               {
                 Ok(bson.Double(0.0)), Ok(bson.String(msg)), Ok(bson.Int32(code)) -> {
-                  let assert Ok(error) =
-                    list.key_find(error.code_to_server_error, code)
-                  let error = error(msg)
+                  case list.key_find(error.code_to_server_error, code) {
+                    Ok(error_constructor) -> {
+                      let server_error = error_constructor(msg)
 
-                  case error.is_retriable_error(error) {
-                    True ->
-                      case error.is_not_primary_error(error) {
-                        True -> {
-                          use refreshed <- result.try(refresh_connections(
-                            client,
-                            timeout,
-                          ))
-                          case find_primary(refreshed) {
-                            Ok(#(socket, refreshed)) ->
+                      case error.is_retriable_error(server_error) {
+                        True ->
+                          case error.is_not_primary_error(server_error) {
+                            True -> {
+                              use refreshed <- result.try(refresh_connections(
+                                client,
+                                timeout,
+                              ))
+                              case find_primary(refreshed) {
+                                Ok(#(socket, refreshed)) ->
+                                  case send_cmd(socket, name, cmd, timeout) {
+                                    Ok(reply) ->
+                                      case
+                                        dict.get(reply, "ok"),
+                                        dict.get(reply, "errmsg"),
+                                        dict.get(reply, "code")
+                                      {
+                                        Ok(bson.Double(0.0)),
+                                        Ok(bson.String(msg)),
+                                        Ok(bson.Int32(code))
+                                        -> {
+                                          case list.key_find(
+                                            error.code_to_server_error,
+                                            code,
+                                          ) {
+                                            Ok(err) -> Error(error.ServerError(err(msg)))
+                                            Error(Nil) -> Error(error.ServerError(server_error))
+                                          }
+                                        }
+                                        _, _, _ -> Ok(#(reply, refreshed))
+                                      }
+                                    Error(err) -> Error(err)
+                                  }
+                                Error(_) -> Error(error.ServerError(server_error))
+                              }
+                            }
+
+                            False ->
                               case send_cmd(socket, name, cmd, timeout) {
                                 Ok(reply) ->
                                   case
@@ -211,51 +295,28 @@ fn execute(
                                     Ok(bson.String(msg)),
                                     Ok(bson.Int32(code))
                                     -> {
-                                      let assert Ok(err) =
-                                        list.key_find(
-                                          error.code_to_server_error,
-                                          code,
-                                        )
-                                      Error(error.ServerError(err(msg)))
+                                      case list.key_find(
+                                        error.code_to_server_error,
+                                        code,
+                                      ) {
+                                        Ok(err) -> Error(error.ServerError(err(msg)))
+                                        Error(Nil) -> Error(error.ServerError(server_error))
+                                      }
                                     }
-                                    _, _, _ -> Ok(#(reply, refreshed))
+                                    _, _, _ -> Ok(#(reply, client))
                                   }
-                                Error(error) -> Error(error)
+                                Error(err) -> Error(err)
                               }
-                            Error(_) -> Error(error.ServerError(error))
                           }
-                        }
-
-                        False ->
-                          case send_cmd(socket, name, cmd, timeout) {
-                            Ok(reply) ->
-                              case
-                                dict.get(reply, "ok"),
-                                dict.get(reply, "errmsg"),
-                                dict.get(reply, "code")
-                              {
-                                Ok(bson.Double(0.0)),
-                                Ok(bson.String(msg)),
-                                Ok(bson.Int32(code))
-                                -> {
-                                  let assert Ok(err) =
-                                    list.key_find(
-                                      error.code_to_server_error,
-                                      code,
-                                    )
-                                  Error(error.ServerError(err(msg)))
-                                }
-                                _, _, _ -> Ok(#(reply, client))
-                              }
-                            Error(error) -> Error(error)
-                          }
+                        False -> Error(error.ServerError(server_error))
                       }
-                    False -> Error(error.ServerError(error))
+                    }
+                    Error(Nil) -> Error(error.ActorError)
                   }
                 }
                 _, _, _ -> Ok(#(reply, client))
               }
-            Error(error) -> Error(error)
+            Error(err) -> Error(err)
           }
         }
       }
@@ -354,10 +415,11 @@ fn send_cmd(
   cmd: List(#(String, bson.Value)),
   timeout: Int,
 ) -> Result(dict.Dict(String, bson.Value), error.Error) {
-  let encoded =
-    cmd
-    |> list.key_set("$db", bson.String(db))
-    |> encode_list
+  let cmd = case list.key_find(cmd, "$db") {
+    Error(Nil) -> list.key_set(cmd, "$db", bson.String(db))
+    Ok(_) -> cmd
+  }
+  let encoded = cmd |> encode_list
 
   let size = bit_array.byte_size(encoded) + 21
 

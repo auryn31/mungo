@@ -21,7 +21,7 @@ pub fn list_databases(
   client_subj: process.Subject(client.Message),
   timeout: Int,
 ) -> Result(List(DatabaseInfo), error.Error) {
-  let collection = client.Collection("admin", client_subj)
+  let collection = client.Collection("admin", "admin", client_subj)
   let cmd = [#("listDatabases", bson.Int32(1))]
 
   client.execute_command(collection, cmd, timeout)

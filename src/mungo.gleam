@@ -3,6 +3,8 @@ import mungo/crud
 import mungo/cursor
 import mungo/bulk
 import mungo/admin
+import mungo/session
+import mungo/change_stream
 
 pub type Message =
   client.Message
@@ -144,4 +146,64 @@ pub fn list_collections(collection, timeout) {
 
 pub fn drop_database(collection, timeout) {
   admin.drop_database(collection, timeout)
+}
+
+pub type Session =
+  session.Session
+
+pub fn start_session(client, timeout) {
+  session.start(client, timeout)
+}
+
+pub fn start_transaction(session) {
+  session.start_transaction(session)
+}
+
+pub fn commit_transaction(session, timeout) {
+  session.commit_transaction(session, timeout)
+}
+
+pub fn abort_transaction(session, timeout) {
+  session.abort_transaction(session, timeout)
+}
+
+pub fn end_session(session, timeout) {
+  session.end(session, timeout)
+}
+
+pub fn execute_command_with_session(
+  collection,
+  cmd,
+  session_id,
+  txn_number,
+  timeout,
+) {
+  client.execute_command_with_session(
+    collection,
+    cmd,
+    session_id,
+    txn_number,
+    timeout,
+  )
+}
+
+pub type ChangeStream =
+  change_stream.ChangeStream
+
+pub type ChangeEvent =
+  change_stream.ChangeEvent
+
+pub type WatchOption =
+  change_stream.WatchOption
+
+pub fn watch(collection, pipeline, options, timeout) {
+  change_stream.watch(collection, pipeline, options, timeout)
+}
+
+pub fn change_stream_next(stream, timeout) {
+  change_stream.next(stream, timeout)
+}
+
+pub fn change_stream_to_list(stream, timeout) {
+  change_stream.to_list(stream, timeout)
 }

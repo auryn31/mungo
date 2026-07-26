@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -13,6 +14,9 @@ import mungo/aggregation
 import mungo/client
 import mungo/crud
 import mungo/cursor
+import mungo/session
+import mungo/bulk
+import mungo/admin
 import testcontainer
 import testcontainer/container
 import testcontainer/error as tc_error
@@ -1960,6 +1964,117 @@ pub fn nested_array_filter_test() {
     should.equal(list.length(matrix), 2)
     let assert [bson.Array(row1), _] = matrix
     should.equal(list.length(row1), 2)
+    Ok(Nil)
+  })
+}
+
+pub fn session_start_test() {
+  with_mongo("w_session", fn(coll) {
+    let assert Ok(sess) = session.start(coll.client, timeout)
+    let sid = session.session_id(sess)
+    should.be_true(bit_array.byte_size(sid) > 0)
+    should.equal(session.is_active(sess), False)
+    let sess2 = session.start_transaction(sess)
+    should.equal(session.is_active(sess2), True)
+    should.equal(session.txn_number(sess2), 1)
+    let _ = session.end(sess2, timeout)
+    Ok(Nil)
+  })
+}
+
+pub fn bulk_insert_test() {
+  with_mongo("w_bulk_insert", fn(coll) {
+    let ops = [
+      bulk.InsertOne([#("x", bson.Int32(1))]),
+      bulk.InsertOne([#("x", bson.Int32(2))]),
+      bulk.InsertOne([#("x", bson.Int32(3))]),
+    ]
+    let assert Ok(result) = bulk.bulk_write(coll, ops, True, timeout)
+    should.equal(result.inserted, 3)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 3)
+    Ok(Nil)
+  })
+}
+
+pub fn bulk_mixed_ops_test() {
+  with_mongo("w_bulk_mixed", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
+    let ops = [
+      bulk.InsertOne([#("x", bson.Int32(2))]),
+      bulk.UpdateOne(
+        filter: [#("x", bson.Int32(1))],
+        update: [#("$set", bson.Document(dict.from_list([#("x", bson.Int32(10))])))],
+        upsert: False,
+      ),
+      bulk.DeleteOne(filter: [#("x", bson.Int32(2))]),
+    ]
+    let assert Ok(result) = bulk.bulk_write(coll, ops, True, timeout)
+    should.equal(result.inserted, 1)
+    should.equal(result.matched, 1)
+    should.equal(result.deleted, 1)
+    let assert Ok(count) = crud.count_all(coll, timeout)
+    should.equal(count, 1)
+    Ok(Nil)
+  })
+}
+
+pub fn list_databases_test() {
+  with_mongo("w_listdb", fn(coll) {
+    let assert Ok(dbs) = admin.list_databases(coll.client, timeout)
+    should.be_true(dbs != [])
+    let db_names = list.map(dbs, fn(db) { db.name })
+    should.be_true(list.contains(db_names, "admin"))
+    Ok(Nil)
+  })
+}
+
+pub fn list_collections_test() {
+  with_mongo("w_listcol", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("a", bson.Int32(1))], timeout)
+    let db_coll = client.Collection("mungo_test", "mungo_test", coll.client)
+    let assert Ok(cols) = admin.list_collections(db_coll, timeout)
+    should.be_true(cols != [])
+    should.be_true(list.contains(cols, "w_listcol"))
+    Ok(Nil)
+  })
+}
+
+pub fn distinct_test() {
+  with_mongo("w_distinct", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
+    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(values) = crud.distinct(coll, "color", [], timeout)
+    should.equal(list.length(values), 2)
+    Ok(Nil)
+  })
+}
+
+pub fn find_and_modify_test() {
+  with_mongo("w_fam", fn(coll) {
+    let assert Ok(_) = crud.insert_one(coll, [
+      #("x", bson.Int32(1)),
+      #("y", bson.Int32(10)),
+    ], timeout)
+    let assert Ok(result) = crud.find_and_modify(
+      coll,
+      [#("x", bson.Int32(1))],
+      option.Some([#("$set", bson.Document(dict.from_list([#("y", bson.Int32(99))])))]),
+      option.None,
+      [],
+      False,
+      False,
+      True,
+      timeout,
+    )
+    case result {
+      option.Some(bson.Document(fields)) -> {
+        let assert Ok(bson.Int32(y)) = dict.get(fields, "y")
+        should.equal(y, 99)
+      }
+      _ -> panic as "Expected document"
+    }
     Ok(Nil)
   })
 }
