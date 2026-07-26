@@ -59,6 +59,18 @@ pub fn main() {
   // Connect to a specific host and port
   let assert Ok(client) =
     mungo.start("mongodb://db.example.com:27017/mydb", 512)
+
+  // Connect to MongoDB Atlas (or any SRV deployment). The +srv host is
+  // resolved via DNS SRV/TXT lookups and TLS is enabled automatically.
+  let assert Ok(client) =
+    mungo.start(
+      "mongodb+srv://user:passwd@cluster0.abcde.mongodb.net/mydb",
+      512,
+    )
+
+  // Enable TLS explicitly for a non-SRV deployment
+  let assert Ok(client) =
+    mungo.start("mongodb://user:passwd@host:27017/mydb?tls=true", 512)
 }
 ```
 
