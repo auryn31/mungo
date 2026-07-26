@@ -672,8 +672,9 @@ fn resolve_srv(uri: String) -> Result(String, error.Error) {
     |> list.map(fn(h) { h.0 <> ":" <> int.to_string(h.1) })
     |> string.join(",")
   let txt_opts = txt_lookup(srv_host) |> result.unwrap("")
+  // SRV connections default to TLS per the connection-string spec.
   let merged =
-    [opts, txt_opts, "ssl=true"]
+    [opts, txt_opts, "tls=true"]
     |> list.filter(fn(s) { s != "" })
     |> string.join("&")
   Ok(
@@ -770,10 +771,11 @@ fn parse_connection_string(uri: String) {
             Error(Nil) -> acc
           }
         })
-      let use_tls = case dict.get(params, "ssl") {
-        Ok("true") -> True
-        Ok("1") -> True
-        _ -> False
+      // "tls" is the modern spelling; "ssl" is the legacy alias. Either enables it.
+      let use_tls = case dict.get(params, "tls"), dict.get(params, "ssl") {
+        Ok("true"), _ | Ok("1"), _ -> True
+        _, Ok("true") | _, Ok("1") -> True
+        _, _ -> False
       }
       let auth_source = case dict.get(params, "authSource") {
         Ok(source) -> source

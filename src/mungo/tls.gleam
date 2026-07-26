@@ -10,10 +10,7 @@ pub fn execute(
   timeout: Int,
 ) -> Result(BitArray, String) {
   case tls_send(socket, packet) {
-    Ok(Nil) -> {
-      tls_set_active_once(socket)
-      tls_receive(socket, timeout)
-    }
+    Ok(Nil) -> tls_receive(socket, timeout)
     Error(err) -> Error(err)
   }
 }
@@ -23,9 +20,6 @@ fn tls_connect(host: String, port: Int, timeout: Int) -> Result(TlsSocket, Strin
 
 @external(erlang, "mungo_tls_ffi", "send")
 fn tls_send(socket: TlsSocket, packet: BitArray) -> Result(Nil, String)
-
-@external(erlang, "mungo_tls_ffi", "set_active_once")
-fn tls_set_active_once(socket: TlsSocket) -> Nil
 
 @external(erlang, "mungo_tls_ffi", "receive_packet")
 fn tls_receive(socket: TlsSocket, timeout: Int) -> Result(BitArray, String)
