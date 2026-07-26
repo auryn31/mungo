@@ -522,9 +522,16 @@ fn authenticate(
   timeout: Int,
   _use_tls: Bool,
 ) {
+  use mechanism <- result.try(negotiate_mechanism(
+    socket,
+    username,
+    auth_source,
+    timeout,
+  ))
+
   let first_payload = scram.first_payload(username)
 
-  let first = scram.first_message(first_payload)
+  let first = scram.first_message(first_payload, mechanism)
 
   use reply <- result.try(send_cmd(socket, auth_source, first, timeout))
 
@@ -537,7 +544,9 @@ fn authenticate(
     first_payload,
     server_payload,
     cid,
+    username,
     password,
+    mechanism,
   ))
 
   use reply <- result.try(send_cmd(socket, auth_source, second, timeout))
@@ -548,6 +557,30 @@ fn authenticate(
         error.ServerError(error.AuthenticationFailed("Authentication not ok")),
       )
     _ -> scram.parse_second_reply(reply, server_signature)
+  }
+}
+
+// Asks the server which SCRAM mechanisms this user supports (via hello's
+// saslSupportedMechs) and prefers SCRAM-SHA-256, falling back to SHA-1.
+fn negotiate_mechanism(
+  socket: DriverSocket,
+  username: String,
+  auth_source: String,
+  timeout: Int,
+) -> Result(scram.Mechanism, error.Error) {
+  let cmd = [
+    #("hello", bson.Int32(1)),
+    #("saslSupportedMechs", bson.String(auth_source <> "." <> username)),
+  ]
+  use reply <- result.map(send_cmd(socket, auth_source, cmd, timeout))
+  case dict.get(reply, "saslSupportedMechs") {
+    Ok(bson.Array(mechs)) ->
+      case list.contains(mechs, bson.String("SCRAM-SHA-256")) {
+        True -> scram.ScramSha256
+        False -> scram.ScramSha1
+      }
+    // No hint (older servers) -> keep the SHA-256 default.
+    _ -> scram.ScramSha256
   }
 }
 
@@ -575,6 +608,7 @@ fn send_cmd(
       |> result.map(fn(reply) {
         let assert <<_:168, rest:bits>> = reply
         decode(rest)
+        |> result.map(normalize_ok)
         |> result.replace_error(error.StructureError)
       })
       |> result.map_error(fn(tcp_error) { error.TCPError(tcp_error) })
@@ -584,6 +618,7 @@ fn send_cmd(
       |> result.map(fn(reply) {
         let assert <<_:168, rest:bits>> = reply
         decode(rest)
+        |> result.map(normalize_ok)
         |> result.replace_error(error.StructureError)
       })
       |> result.map_error(fn(_) { error.TCPError(mug.Timeout) })
@@ -591,7 +626,66 @@ fn send_cmd(
   }
 }
 
+// MongoDB's "ok" field is a double, but some deployments (e.g. Atlas) return
+// it as an int. Normalize to Double so reply parsers can match consistently.
+fn normalize_ok(
+  reply: dict.Dict(String, bson.Value),
+) -> dict.Dict(String, bson.Value) {
+  case dict.get(reply, "ok") {
+    Ok(bson.Int32(n)) ->
+      dict.insert(reply, "ok", bson.Double(int.to_float(n)))
+    Ok(bson.Int64(n)) ->
+      dict.insert(reply, "ok", bson.Double(int.to_float(n)))
+    _ -> reply
+  }
+}
+
+@external(erlang, "dns_ffi", "srv_lookup")
+fn srv_lookup(name: String) -> Result(List(#(String, Int)), Nil)
+
+@external(erlang, "dns_ffi", "txt_lookup")
+fn txt_lookup(name: String) -> Result(String, Nil)
+
+// Resolves a mongodb+srv:// URI to a plain multi-host mongodb:// URI via DNS
+// SRV/TXT lookups, then defers to the normal parser. TLS is on by default for
+// SRV per the connection-string spec (mungo reads it as ssl=true).
+fn resolve_srv(uri: String) -> Result(String, error.Error) {
+  let rest = string.drop_start(uri, 14)
+  let #(auth_prefix, host_rest) = case string.split_once(rest, "@") {
+    Ok(#(auth, r)) -> #(auth <> "@", r)
+    Error(Nil) -> #("", rest)
+  }
+  let #(srv_host, db_and_options) = case string.split_once(host_rest, "/") {
+    Ok(#(h, rest)) -> #(h, rest)
+    Error(Nil) -> #(host_rest, "")
+  }
+  let #(db, opts) = case string.split_once(db_and_options, "?") {
+    Ok(#(d, o)) -> #(d, o)
+    Error(Nil) -> #(db_and_options, "")
+  }
+  use hosts <- result.try(
+    srv_lookup("_mongodb._tcp." <> srv_host)
+    |> result.replace_error(error.ConnectionStringError),
+  )
+  let host_string =
+    hosts
+    |> list.map(fn(h) { h.0 <> ":" <> int.to_string(h.1) })
+    |> string.join(",")
+  let txt_opts = txt_lookup(srv_host) |> result.unwrap("")
+  let merged =
+    [opts, txt_opts, "ssl=true"]
+    |> list.filter(fn(s) { s != "" })
+    |> string.join("&")
+  Ok(
+    "mongodb://" <> auth_prefix <> host_string <> "/" <> db <> "?" <> merged,
+  )
+}
+
 fn parse_connection_string(uri: String) {
+  use uri <- result.try(case string.starts_with(uri, "mongodb+srv://") {
+    True -> resolve_srv(uri)
+    False -> Ok(uri)
+  })
   use <- bool.guard(
     !string.starts_with(uri, "mongodb://"),
     Error(error.ConnectionStringError),

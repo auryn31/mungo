@@ -13,15 +13,26 @@ connect(Host, Port) ->
 
 connect(Host, Port, Timeout) ->
     ssl:start(),
-    ssl:connect(Host, Port, [
+    HostList = case is_binary(Host) of
+        true -> binary_to_list(Host);
+        false -> Host
+    end,
+    ssl:connect(HostList, Port, [
         {active, false},
         {packet, raw},
         binary,
-        {timeout, Timeout}
+        {verify, verify_peer},
+        {cacerts, public_key:cacerts_get()},
+        {server_name_indication, HostList},
+        {customize_hostname_check,
+            [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
     ], Timeout).
 
 send(Socket, Packet) ->
-    ssl:send(Socket, Packet).
+    case ssl:send(Socket, Packet) of
+        ok -> {ok, nil};
+        Err -> Err
+    end.
 
 set_active_once(Socket) ->
     ssl:setopts(Socket, [{active, once}]).

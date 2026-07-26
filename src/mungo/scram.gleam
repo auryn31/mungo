@@ -20,7 +20,34 @@ pub fn first_payload(username: String) {
   |> string.concat
 }
 
-pub fn first_message(payload) {
+// SCRAM mechanism the server supports for a user. Chosen by negotiation.
+pub type Mechanism {
+  ScramSha1
+  ScramSha256
+}
+
+fn mechanism_name(mechanism: Mechanism) -> String {
+  case mechanism {
+    ScramSha1 -> "SCRAM-SHA-1"
+    ScramSha256 -> "SCRAM-SHA-256"
+  }
+}
+
+fn mechanism_alg(mechanism: Mechanism) -> crypto.HashAlgorithm {
+  case mechanism {
+    ScramSha1 -> crypto.Sha1
+    ScramSha256 -> crypto.Sha256
+  }
+}
+
+fn mechanism_key_len(mechanism: Mechanism) -> Int {
+  case mechanism {
+    ScramSha1 -> 20
+    ScramSha256 -> 32
+  }
+}
+
+pub fn first_message(payload, mechanism: Mechanism) {
   let payload =
     ["n,,", payload]
     |> string.concat
@@ -28,7 +55,7 @@ pub fn first_message(payload) {
 
   [
     #("saslStart", bson.Boolean(True)),
-    #("mechanism", bson.String("SCRAM-SHA-256")),
+    #("mechanism", bson.String(mechanism_name(mechanism))),
     #("payload", bson.Binary(bson.Generic(payload))),
     #("autoAuthorize", bson.Boolean(True)),
     #(
@@ -101,14 +128,38 @@ pub fn parse_first_reply(reply: dict.Dict(String, bson.Value)) {
   }
 }
 
+// MongoDB's SCRAM-SHA-1 feeds the hex MD5 of "username:mongo:password" (a
+// MONGODB-CR legacy quirk) into Hi(), not the raw password. SCRAM-SHA-256
+// uses the raw password.
+fn scram_secret(
+  username: String,
+  password: String,
+  mechanism: Mechanism,
+) -> String {
+  case mechanism {
+    ScramSha256 -> password
+    ScramSha1 ->
+      crypto.hash(
+        crypto.Md5,
+        bit_array.from_string(username <> ":mongo:" <> password),
+      )
+      |> bit_array.base16_encode
+      |> string.lowercase
+  }
+}
+
 pub fn second_message(
   server_params,
   first_payload,
   server_payload,
   cid,
+  username,
   password,
+  mechanism: Mechanism,
 ) {
   let #(rnonce, salt, iterations) = server_params
+  let alg = mechanism_alg(mechanism)
+  let secret = scram_secret(username, password, mechanism)
 
   use salt <- result.try(
     bit_array.base64_decode(salt)
@@ -119,23 +170,15 @@ pub fn second_message(
     ),
   )
 
-  let salted_password = hi(password, salt, iterations)
+  let salted_password = hi(secret, salt, iterations, mechanism)
 
   let client_key =
-    crypto.hmac(
-      bit_array.from_string("Client Key"),
-      crypto.Sha256,
-      salted_password,
-    )
+    crypto.hmac(bit_array.from_string("Client Key"), alg, salted_password)
 
   let server_key =
-    crypto.hmac(
-      bit_array.from_string("Server Key"),
-      crypto.Sha256,
-      salted_password,
-    )
+    crypto.hmac(bit_array.from_string("Server Key"), alg, salted_password)
 
-  let stored_key = crypto.hash(crypto.Sha256, client_key)
+  let stored_key = crypto.hash(alg, client_key)
 
   let auth_message =
     [first_payload, ",", server_payload, ",c=biws,r=", rnonce]
@@ -143,7 +186,7 @@ pub fn second_message(
     |> generic.from_string
 
   let client_signature =
-    crypto.hmac(generic.to_bit_array(auth_message), crypto.Sha256, stored_key)
+    crypto.hmac(generic.to_bit_array(auth_message), alg, stored_key)
 
   let second_payload =
     [
@@ -157,7 +200,7 @@ pub fn second_message(
     |> generic.from_string
 
   let server_signature =
-    crypto.hmac(generic.to_bit_array(auth_message), crypto.Sha256, server_key)
+    crypto.hmac(generic.to_bit_array(auth_message), alg, server_key)
 
   #(
     [
@@ -231,14 +274,35 @@ fn clean_username(username: String) {
   |> string.replace(",", "=2C")
 }
 
-pub fn hi(password, salt, iterations) {
+// erlang crypto:pbkdf2_hmac digest atoms differ from gleam_crypto's:
+// SHA-1 is the atom `sha`, not `sha1`. These constructors compile to the
+// atoms erlang expects.
+type Digest {
+  Sha
+  Sha256
+}
+
+fn mechanism_digest(mechanism: Mechanism) -> Digest {
+  case mechanism {
+    ScramSha1 -> Sha
+    ScramSha256 -> Sha256
+  }
+}
+
+pub fn hi(password, salt, iterations, mechanism: Mechanism) {
   // TODO: should cache with unique key constructed from params
-  pbkdf2(crypto.Sha256, password, salt, iterations, 32)
+  pbkdf2(
+    mechanism_digest(mechanism),
+    password,
+    salt,
+    iterations,
+    mechanism_key_len(mechanism),
+  )
 }
 
 @external(erlang, "crypto", "pbkdf2_hmac")
 fn pbkdf2(
-  alg: crypto.HashAlgorithm,
+  alg: Digest,
   password: String,
   salt: BitArray,
   iterations: Int,
