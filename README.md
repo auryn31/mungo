@@ -29,14 +29,13 @@ gleam add mungo
 - [x] support connection strings
 - [x] support authentication
 - [x] support mongodb cursors
-- [ ] support connection pooling
-   - The plan is to use [puddle](https://github.com/massivefermion/puddle), but there are still unresolved issues with that package!
-- [ ] support bulk operations
+- [x] support connection pooling
+- [x] support bulk operations
 - [ ] support clusters
-- [ ] support tls
-- [ ] support transactions
-- [ ] support change streams
-- [ ] support other mongodb commands
+- [x] support tls
+- [x] support transactions
+- [x] support change streams
+- [x] support other mongodb commands (distinct, findAndModify, drop, createIndex, dropIndex, listDatabases, listCollections, dropDatabase)
 
 ## <img width=32 src=https://raw.githubusercontent.com/massivefermion/mungo/main/icon.png> Usage
 
