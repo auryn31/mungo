@@ -163,6 +163,133 @@ pub fn count(
   |> result.flatten
 }
 
+pub fn distinct(
+  collection: client.Collection,
+  field: String,
+  filter: List(#(String, bson.Value)),
+  timeout: Int,
+) -> Result(List(bson.Value), error.Error) {
+  let cmd = [
+    #("distinct", bson.String(collection.name)),
+    #("key", bson.String(field)),
+    #("query", bson.Document(dict.from_list(filter))),
+  ]
+
+  client.execute_command(collection, cmd, timeout)
+  |> result.map(fn(reply) {
+    case dict.get(reply, "values") {
+      Ok(bson.Array(values)) -> Ok(values)
+      _ -> Error(error.StructureError)
+    }
+  })
+  |> result.flatten
+}
+
+pub fn find_and_modify(
+  collection: client.Collection,
+  filter: List(#(String, bson.Value)),
+  update: option.Option(List(#(String, bson.Value))),
+  replacement: option.Option(List(#(String, bson.Value))),
+  sort: List(#(String, bson.Value)),
+  remove: Bool,
+  upsert: Bool,
+  new: Bool,
+  timeout: Int,
+) -> Result(option.Option(bson.Value), error.Error) {
+  let cmd =
+    [
+      #("findAndModify", bson.String(collection.name)),
+      #("query", bson.Document(dict.from_list(filter))),
+      #("new", bson.Boolean(new)),
+      #("remove", bson.Boolean(remove)),
+      #("upsert", bson.Boolean(upsert)),
+    ]
+    |> list.append(case sort {
+      [] -> []
+      s -> [#("sort", bson.Document(dict.from_list(s)))]
+    })
+    |> list.append(case update {
+      option.None -> []
+      option.Some(u) -> [#("update", bson.Document(dict.from_list(u)))]
+    })
+    |> list.append(case replacement {
+      option.None -> []
+      option.Some(r) -> [
+        #("update", bson.Document(dict.from_list(r))),
+      ]
+    })
+
+  client.execute_command(collection, cmd, timeout)
+  |> result.map(fn(reply) {
+    case dict.get(reply, "value") {
+      Ok(value) ->
+        case value {
+          bson.Document(_) -> Ok(option.Some(value))
+          bson.Null -> Ok(option.None)
+          _ -> Ok(option.None)
+        }
+      Error(Nil) -> Ok(option.None)
+    }
+  })
+  |> result.flatten
+}
+
+pub fn drop(
+  collection: client.Collection,
+  timeout: Int,
+) -> Result(Nil, error.Error) {
+  let cmd = [#("drop", bson.String(collection.name))]
+
+  client.execute_command(collection, cmd, timeout)
+  |> result.replace(Nil)
+}
+
+pub fn create_index(
+  collection: client.Collection,
+  keys: List(#(String, bson.Value)),
+  name: option.Option(String),
+  unique: Bool,
+  timeout: Int,
+) -> Result(Nil, error.Error) {
+  let index_doc =
+    list.prepend(
+      list.map(keys, fn(kv) {
+        #(kv.0, case kv.1 {
+          bson.Int32(n) -> bson.Int32(n)
+          other -> other
+        })
+      }),
+      #("key", bson.Document(dict.from_list(keys))),
+    )
+    |> list.append(case name {
+      option.None -> []
+      option.Some(n) -> [#("name", bson.String(n))]
+    })
+    |> list.append([#("unique", bson.Boolean(unique))])
+
+  let cmd = [
+    #("createIndexes", bson.String(collection.name)),
+    #("indexes", bson.Array([bson.Document(dict.from_list(index_doc))])),
+  ]
+
+  client.execute_command(collection, cmd, timeout)
+  |> result.replace(Nil)
+}
+
+pub fn drop_index(
+  collection: client.Collection,
+  index_name: String,
+  timeout: Int,
+) -> Result(Nil, error.Error) {
+  let cmd = [
+    #("dropIndexes", bson.String(collection.name)),
+    #("index", bson.String(index_name)),
+  ]
+
+  client.execute_command(collection, cmd, timeout)
+  |> result.replace(Nil)
+}
+
 pub fn insert_many(
   collection: client.Collection,
   docs: List(List(#(String, bson.Value))),

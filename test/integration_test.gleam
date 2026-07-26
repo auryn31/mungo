@@ -14,22 +14,51 @@ import mungo/client
 import mungo/crud
 import mungo/cursor
 import testcontainer
+import testcontainer/container
 import testcontainer/error as tc_error
+import testcontainer/formula
+import testcontainer/port
 import testcontainer_formulas/mongo
 
 const timeout = 5000
+
+const container_key = "mungo_test_url"
+
+@external(erlang, "persistent_term_ffi", "get")
+fn persistent_get(key: String) -> Result(String, Nil)
+
+@external(erlang, "persistent_term_ffi", "set")
+fn persistent_set(key: String, value: String) -> Nil
+
+fn get_or_start_container() -> String {
+  case persistent_get(container_key) {
+    Ok(url) -> url
+    Error(Nil) -> {
+      let f =
+        mongo.new()
+        |> mongo.with_database("mungo_test")
+        |> mongo.formula()
+      let assert Ok(c) = testcontainer.start(formula.spec(f))
+      let host = container.host(c)
+      let assert Ok(p) = container.host_port(c, port.tcp(27_017))
+      let url =
+        "mongodb://root:root@"
+        <> host
+        <> ":"
+        <> int.to_string(p)
+        <> "/mungo_test?authSource=admin"
+      persistent_set(container_key, url)
+      url
+    }
+  }
+}
 
 fn with_mongo(
   name: String,
   f: fn(client.Collection) -> Result(a, tc_error.Error),
 ) -> Result(a, tc_error.Error) {
-  use db <- testcontainer.with_formula(
-    mongo.new()
-    |> mongo.with_database("mungo_test")
-    |> mongo.formula(),
-  )
-
-  let assert Ok(started) = client.start(db.connection_url, timeout)
+  let url = get_or_start_container()
+  let assert Ok(started) = client.start(url, 1, timeout)
   let coll = client.collection(started.data, name)
   f(coll)
 }

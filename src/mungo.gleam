@@ -1,13 +1,15 @@
 import mungo/client
 import mungo/crud
 import mungo/cursor
+import mungo/bulk
+import mungo/admin
 
 pub type Message =
   client.Message
 
 /// The connection uri must specify the database
-pub fn start(uri, timeout) {
-  client.start(uri, timeout)
+pub fn start(uri, pool_size, timeout) {
+  client.start(uri, pool_size, timeout)
 }
 
 pub fn next(cursor, timeout) {
@@ -81,4 +83,65 @@ pub fn update_one(collection, filter, change, options, timeout) {
 pub fn update_many(collection, filter, change, options, timeout) {
   collection
   |> crud.update_many(filter, change, options, timeout)
+}
+
+pub fn bulk_write(collection, operations, ordered, timeout) {
+  collection
+  |> bulk.bulk_write(operations, ordered, timeout)
+}
+
+pub fn distinct(collection, field, filter, timeout) {
+  collection
+  |> crud.distinct(field, filter, timeout)
+}
+
+pub fn find_and_modify(
+  collection,
+  filter,
+  update,
+  replacement,
+  sort,
+  remove,
+  upsert,
+  new,
+  timeout,
+) {
+  collection
+  |> crud.find_and_modify(
+    filter,
+    update,
+    replacement,
+    sort,
+    remove,
+    upsert,
+    new,
+    timeout,
+  )
+}
+
+pub fn drop(collection, timeout) {
+  collection
+  |> crud.drop(timeout)
+}
+
+pub fn create_index(collection, keys, name, unique, timeout) {
+  collection
+  |> crud.create_index(keys, name, unique, timeout)
+}
+
+pub fn drop_index(collection, index_name, timeout) {
+  collection
+  |> crud.drop_index(index_name, timeout)
+}
+
+pub fn list_databases(client, timeout) {
+  admin.list_databases(client, timeout)
+}
+
+pub fn list_collections(collection, timeout) {
+  admin.list_collections(collection, timeout)
+}
+
+pub fn drop_database(collection, timeout) {
+  admin.drop_database(collection, timeout)
 }

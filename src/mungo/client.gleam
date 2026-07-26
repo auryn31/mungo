@@ -13,6 +13,7 @@ import gleam/uri
 import mungo/error
 import mungo/scram
 import mungo/tcp
+import mungo/tls as tls_module
 
 import bison.{decode, encode_list}
 import bison/bson
@@ -27,9 +28,10 @@ pub type Message {
   )
 }
 
-pub fn start(uri: String, timeout: Int) {
+pub fn start(uri: String, pool_size: Int, timeout: Int) {
+  let pool_size = int.max(pool_size, 1)
   actor.new_with_initialiser(timeout, fn(subj) {
-    case connect(uri, timeout) {
+    case connect(uri, pool_size, timeout) {
       Ok(client) ->
         actor.initialised(client)
         |> actor.returning(subj)
@@ -67,43 +69,67 @@ pub fn start(uri: String, timeout: Int) {
   |> actor.start
 }
 
+pub type DriverSocket {
+  TcpSocket(mug.Socket)
+  TlsSocket(tls_module.TlsSocket)
+}
+
 pub opaque type Connection {
-  Connection(socket: mug.Socket, primary: Bool)
+  Connection(socket: DriverSocket, primary: Bool, host: String, port: Int)
 }
 
 pub opaque type Client {
-  Client(db: String, connections: List(Connection))
+  Client(
+    db: String,
+    connections: List(Connection),
+    next_index: Int,
+    pool_size: Int,
+    use_tls: Bool,
+  )
 }
 
 pub type Collection {
   Collection(name: String, client: process.Subject(Message))
 }
 
-fn connect(uri: String, timeout: Int) -> Result(Client, error.Error) {
+fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Error) {
   use info <- result.try(parse_connection_string(uri))
 
   case info {
-    #(auth, hosts, db) -> {
+    #(auth, hosts, db, use_tls) -> {
       use connections <- result.try(
         list.try_map(hosts, fn(host) {
-          use socket <- result.try(
-            tcp.connect(host.0, host.1, timeout)
-            |> result.map_error(fn(err) { error.TCPError(connect_error_to_error(err)) }),
-          )
+          list.repeat(Nil, pool_size)
+          |> list.index_map(fn(_, i) { i })
+          |> list.try_map(fn(_) {
+            use socket <- result.try(case use_tls {
+              True ->
+                tls_module.connect(host.0, host.1, timeout)
+                |> result.map(fn(s) { TlsSocket(s) })
+                |> result.map_error(fn(_) { error.TCPError(mug.Timeout) })
+              False ->
+                tcp.connect(host.0, host.1, timeout)
+                |> result.map(fn(s) { TcpSocket(s) })
+                |> result.map_error(fn(err) {
+                  error.TCPError(connect_error_to_error(err))
+                })
+            })
 
-          use is_primary <- result.try(is_primary(socket, db, timeout))
-          Ok(Connection(socket, is_primary))
-        }),
+            use is_primary <- result.try(is_primary(socket, db, timeout, use_tls))
+            Ok(Connection(socket, is_primary, host.0, host.1))
+          })
+        })
+        |> result.map(list.flatten),
       )
 
       case auth {
-        option.None -> Ok(Client(db, connections))
+        option.None -> Ok(Client(db, connections, 0, pool_size, use_tls))
         option.Some(#(username, password, auth_source)) -> {
           list.try_each(
             list.map(connections, fn(connection) { connection.socket }),
-            authenticate(_, username, password, auth_source, timeout),
+            authenticate(_, username, password, auth_source, timeout, use_tls),
           )
-          |> result.replace(Client(db, connections))
+          |> result.replace(Client(db, connections, 0, pool_size, use_tls))
         }
       }
     }
@@ -133,101 +159,138 @@ fn execute(
   timeout: Int,
 ) -> Result(#(dict.Dict(String, bson.Value), Client), error.Error) {
   case client {
-    Client(name, connections) -> {
-      let assert Ok(Connection(socket, True)) =
-        list.find(connections, fn(connection) { connection.primary })
+    Client(name, connections, index, pool_size, use_tls) -> {
+      let primary_connections =
+        list.filter(connections, fn(connection) { connection.primary })
 
-      case send_cmd(socket, name, cmd, timeout) {
-        Ok(reply) ->
-          case
-            dict.get(reply, "ok"),
-            dict.get(reply, "errmsg"),
-            dict.get(reply, "code")
-          {
-            Ok(bson.Double(0.0)), Ok(bson.String(msg)), Ok(bson.Int32(code)) -> {
-              let assert Ok(error) =
-                list.key_find(error.code_to_server_error, code)
-              let error = error(msg)
+      case list.is_empty(primary_connections) {
+        True -> Error(error.ActorError)
+        False -> {
+          let count = list.length(primary_connections)
+          let current_index = case count > 0 {
+            True -> index % count
+            False -> 0
+          }
+          let assert Ok(Connection(socket, True, _, _)) =
+            list.drop(primary_connections, current_index)
+            |> list.first
 
-              case error.is_retriable_error(error) {
-                True ->
-                  case error.is_not_primary_error(error) {
-                    True -> {
-                      use connections <- result.try(
-                        client.connections
-                        |> list.try_map(fn(connection) {
-                          use is_primary <- result.try(is_primary(
-                            connection.socket,
-                            client.db,
+          let next_index = index + 1
+          let client = Client(name, connections, next_index, pool_size, use_tls)
+
+          case send_cmd(socket, name, cmd, timeout) {
+            Ok(reply) ->
+              case
+                dict.get(reply, "ok"),
+                dict.get(reply, "errmsg"),
+                dict.get(reply, "code")
+              {
+                Ok(bson.Double(0.0)), Ok(bson.String(msg)), Ok(bson.Int32(code)) -> {
+                  let assert Ok(error) =
+                    list.key_find(error.code_to_server_error, code)
+                  let error = error(msg)
+
+                  case error.is_retriable_error(error) {
+                    True ->
+                      case error.is_not_primary_error(error) {
+                        True -> {
+                          use refreshed <- result.try(refresh_connections(
+                            client,
                             timeout,
                           ))
-                          Ok(Connection(socket, is_primary))
-                        }),
-                      )
-
-                      let assert Ok(Connection(socket, True)) =
-                        list.find(connections, fn(connection) {
-                          case
-                            is_primary(connection.socket, client.db, timeout)
-                          {
-                            Ok(is_primary) -> is_primary
-                            Error(_) -> False
+                          case find_primary(refreshed) {
+                            Ok(#(socket, refreshed)) ->
+                              case send_cmd(socket, name, cmd, timeout) {
+                                Ok(reply) ->
+                                  case
+                                    dict.get(reply, "ok"),
+                                    dict.get(reply, "errmsg"),
+                                    dict.get(reply, "code")
+                                  {
+                                    Ok(bson.Double(0.0)),
+                                    Ok(bson.String(msg)),
+                                    Ok(bson.Int32(code))
+                                    -> {
+                                      let assert Ok(err) =
+                                        list.key_find(
+                                          error.code_to_server_error,
+                                          code,
+                                        )
+                                      Error(error.ServerError(err(msg)))
+                                    }
+                                    _, _, _ -> Ok(#(reply, refreshed))
+                                  }
+                                Error(error) -> Error(error)
+                              }
+                            Error(_) -> Error(error.ServerError(error))
                           }
-                        })
+                        }
 
-                      case send_cmd(socket, name, cmd, timeout) {
-                        Ok(reply) ->
-                          case
-                            dict.get(reply, "ok"),
-                            dict.get(reply, "errmsg"),
-                            dict.get(reply, "code")
-                          {
-                            Ok(bson.Double(0.0)),
-                              Ok(bson.String(msg)),
-                              Ok(bson.Int32(code))
-                            -> {
-                              let assert Ok(error) =
-                                list.key_find(error.code_to_server_error, code)
-                              Error(error.ServerError(error(msg)))
-                            }
-
-                            _, _, _ -> Ok(#(reply, client))
+                        False ->
+                          case send_cmd(socket, name, cmd, timeout) {
+                            Ok(reply) ->
+                              case
+                                dict.get(reply, "ok"),
+                                dict.get(reply, "errmsg"),
+                                dict.get(reply, "code")
+                              {
+                                Ok(bson.Double(0.0)),
+                                Ok(bson.String(msg)),
+                                Ok(bson.Int32(code))
+                                -> {
+                                  let assert Ok(err) =
+                                    list.key_find(
+                                      error.code_to_server_error,
+                                      code,
+                                    )
+                                  Error(error.ServerError(err(msg)))
+                                }
+                                _, _, _ -> Ok(#(reply, client))
+                              }
+                            Error(error) -> Error(error)
                           }
-                        Error(error) -> Error(error)
                       }
-                    }
-
-                    False ->
-                      case send_cmd(socket, name, cmd, timeout) {
-                        Ok(reply) ->
-                          case
-                            dict.get(reply, "ok"),
-                            dict.get(reply, "errmsg"),
-                            dict.get(reply, "code")
-                          {
-                            Ok(bson.Double(0.0)),
-                              Ok(bson.String(msg)),
-                              Ok(bson.Int32(code))
-                            -> {
-                              let assert Ok(error) =
-                                list.key_find(error.code_to_server_error, code)
-                              Error(error.ServerError(error(msg)))
-                            }
-
-                            _, _, _ -> Ok(#(reply, client))
-                          }
-                        Error(error) -> Error(error)
-                      }
+                    False -> Error(error.ServerError(error))
                   }
-                False -> Error(error.ServerError(error))
+                }
+                _, _, _ -> Ok(#(reply, client))
               }
-            }
-            _, _, _ -> Ok(#(reply, client))
+            Error(error) -> Error(error)
           }
-        Error(error) -> Error(error)
+        }
       }
     }
   }
+}
+
+fn find_primary(client: Client) -> Result(#(DriverSocket, Client), error.Error) {
+  let Client(_, connections, _, _, _) = client
+  let primary_connections =
+    list.filter(connections, fn(connection) { connection.primary })
+
+  case list.first(primary_connections) {
+    Ok(Connection(socket, True, _, _)) -> Ok(#(socket, client))
+    _ -> Error(error.ActorError)
+  }
+}
+
+fn refresh_connections(
+  client: Client,
+  timeout: Int,
+) -> Result(Client, error.Error) {
+  let Client(name, connections, index, pool_size, use_tls) = client
+  use refreshed <- result.try(
+    list.try_map(connections, fn(connection) {
+      use is_primary <- result.try(is_primary(
+        connection.socket,
+        name,
+        timeout,
+        use_tls,
+      ))
+      Ok(Connection(connection.socket, is_primary, connection.host, connection.port))
+    }),
+  )
+  Ok(Client(name, refreshed, index, pool_size, use_tls))
 }
 
 fn connect_error_to_error(err: mug.ConnectError) -> mug.Error {
@@ -238,7 +301,7 @@ fn connect_error_to_error(err: mug.ConnectError) -> mug.Error {
   }
 }
 
-fn is_primary(socket: mug.Socket, db: String, timeout: Int) {
+fn is_primary(socket: DriverSocket, db: String, timeout: Int, _use_tls: Bool) {
   send_cmd(socket, db, [#("hello", bson.Int32(1))], timeout)
   |> result.map(fn(reply) {
     case dict.get(reply, "isWritablePrimary") {
@@ -249,11 +312,12 @@ fn is_primary(socket: mug.Socket, db: String, timeout: Int) {
 }
 
 fn authenticate(
-  socket: mug.Socket,
+  socket: DriverSocket,
   username: String,
   password: String,
   auth_source: String,
   timeout: Int,
+  _use_tls: Bool,
 ) {
   let first_payload = scram.first_payload(username)
 
@@ -285,7 +349,7 @@ fn authenticate(
 }
 
 fn send_cmd(
-  socket: mug.Socket,
+  socket: DriverSocket,
   db: String,
   cmd: List(#(String, bson.Value)),
   timeout: Int,
@@ -301,14 +365,26 @@ fn send_cmd(
     [<<size:32-little, 0:32, 0:32, 2013:32-little, 0:32, 0>>, encoded]
     |> bit_array.concat
 
-  tcp.execute(socket, packet, timeout)
-  |> result.map(fn(reply) {
-    let assert <<_:168, rest:bits>> = reply
-    decode(rest)
-    |> result.replace_error(error.StructureError)
-  })
-  |> result.map_error(fn(tcp_error) { error.TCPError(tcp_error) })
-  |> result.flatten
+  case socket {
+    TcpSocket(tcp_socket) ->
+      tcp.execute(tcp_socket, packet, timeout)
+      |> result.map(fn(reply) {
+        let assert <<_:168, rest:bits>> = reply
+        decode(rest)
+        |> result.replace_error(error.StructureError)
+      })
+      |> result.map_error(fn(tcp_error) { error.TCPError(tcp_error) })
+      |> result.flatten
+    TlsSocket(tls_socket) ->
+      tls_module.execute(tls_socket, packet, timeout)
+      |> result.map(fn(reply) {
+        let assert <<_:168, rest:bits>> = reply
+        decode(rest)
+        |> result.replace_error(error.StructureError)
+      })
+      |> result.map_error(fn(_) { error.TCPError(mug.Timeout) })
+      |> result.flatten
+  }
 }
 
 fn parse_connection_string(uri: String) {
@@ -377,19 +453,39 @@ fn parse_connection_string(uri: String) {
           |> option.map(fn(auth) { #(auth.0, auth.1, db) }),
         hosts,
         db,
+        False,
       ))
     }
 
-    [db, "authSource=" <> auth_source] if db != "" -> {
+    [db, query_string] if db != "" -> {
       use db <- result.try(
         uri.percent_decode(db)
         |> result.replace_error(error.ConnectionStringError),
       )
+      let params =
+        query_string
+        |> string.split("&")
+        |> list.fold(dict.new(), fn(acc, param) {
+          case string.split_once(param, "=") {
+            Ok(#(key, value)) -> dict.insert(acc, key, value)
+            Error(Nil) -> acc
+          }
+        })
+      let use_tls = case dict.get(params, "ssl") {
+        Ok("true") -> True
+        Ok("1") -> True
+        _ -> False
+      }
+      let auth_source = case dict.get(params, "authSource") {
+        Ok(source) -> source
+        Error(Nil) -> db
+      }
       Ok(#(
         auth
           |> option.map(fn(auth) { #(auth.0, auth.1, auth_source) }),
         hosts,
         db,
+        use_tls,
       ))
     }
 
