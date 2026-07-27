@@ -40,7 +40,13 @@ pub type BulkWriteResult {
 }
 
 fn empty_result() -> BulkWriteResult {
-  BulkWriteResult(inserted: 0, matched: 0, modified: 0, deleted: 0, upserted: [])
+  BulkWriteResult(
+    inserted: 0,
+    matched: 0,
+    modified: 0,
+    deleted: 0,
+    upserted: [],
+  )
 }
 
 fn merge_results(a: BulkWriteResult, b: BulkWriteResult) -> BulkWriteResult {
@@ -133,8 +139,7 @@ fn collect_inserts(ops: List(BulkOperation)) -> List(bson.Value) {
   |> list.map(fn(op) {
     case op {
       InsertOne(doc) -> {
-        let has_id =
-          list.any(doc, fn(kv) { kv.0 == "_id" })
+        let has_id = list.any(doc, fn(kv) { kv.0 == "_id" })
         case has_id {
           True -> bson.Document(dict.from_list(doc))
           False -> {
@@ -153,26 +158,32 @@ fn collect_updates(ops: List(BulkOperation)) -> List(bson.Value) {
   |> list.map(fn(op) {
     case op {
       UpdateOne(filter:, update:, upsert:) ->
-        bson.Document(dict.from_list([
-          #("q", bson.Document(dict.from_list(filter))),
-          #("u", bson.Document(dict.from_list(update))),
-          #("multi", bson.Boolean(False)),
-          #("upsert", bson.Boolean(upsert)),
-        ]))
+        bson.Document(
+          dict.from_list([
+            #("q", bson.Document(dict.from_list(filter))),
+            #("u", bson.Document(dict.from_list(update))),
+            #("multi", bson.Boolean(False)),
+            #("upsert", bson.Boolean(upsert)),
+          ]),
+        )
       UpdateMany(filter:, update:, upsert:) ->
-        bson.Document(dict.from_list([
-          #("q", bson.Document(dict.from_list(filter))),
-          #("u", bson.Document(dict.from_list(update))),
-          #("multi", bson.Boolean(True)),
-          #("upsert", bson.Boolean(upsert)),
-        ]))
+        bson.Document(
+          dict.from_list([
+            #("q", bson.Document(dict.from_list(filter))),
+            #("u", bson.Document(dict.from_list(update))),
+            #("multi", bson.Boolean(True)),
+            #("upsert", bson.Boolean(upsert)),
+          ]),
+        )
       ReplaceOne(filter:, replacement:, upsert:) ->
-        bson.Document(dict.from_list([
-          #("q", bson.Document(dict.from_list(filter))),
-          #("u", bson.Document(dict.from_list(replacement))),
-          #("multi", bson.Boolean(False)),
-          #("upsert", bson.Boolean(upsert)),
-        ]))
+        bson.Document(
+          dict.from_list([
+            #("q", bson.Document(dict.from_list(filter))),
+            #("u", bson.Document(dict.from_list(replacement))),
+            #("multi", bson.Boolean(False)),
+            #("upsert", bson.Boolean(upsert)),
+          ]),
+        )
       _ -> bson.Document(dict.new())
     }
   })
@@ -183,15 +194,19 @@ fn collect_deletes(ops: List(BulkOperation)) -> List(bson.Value) {
   |> list.map(fn(op) {
     case op {
       DeleteOne(filter:) ->
-        bson.Document(dict.from_list([
-          #("q", bson.Document(dict.from_list(filter))),
-          #("limit", bson.Int32(1)),
-        ]))
+        bson.Document(
+          dict.from_list([
+            #("q", bson.Document(dict.from_list(filter))),
+            #("limit", bson.Int32(1)),
+          ]),
+        )
       DeleteMany(filter:) ->
-        bson.Document(dict.from_list([
-          #("q", bson.Document(dict.from_list(filter))),
-          #("limit", bson.Int32(0)),
-        ]))
+        bson.Document(
+          dict.from_list([
+            #("q", bson.Document(dict.from_list(filter))),
+            #("limit", bson.Int32(0)),
+          ]),
+        )
       _ -> bson.Document(dict.new())
     }
   })
@@ -262,13 +277,15 @@ fn execute_insert_batch(
           Ok(bson.Int32(n)) -> n
           _ -> 0
         }
-        Ok(BulkWriteResult(
-          inserted:,
-          matched: 0,
-          modified: 0,
-          deleted: 0,
-          upserted: [],
-        ))
+        Ok(
+          BulkWriteResult(
+            inserted:,
+            matched: 0,
+            modified: 0,
+            deleted: 0,
+            upserted: [],
+          ),
+        )
       }
     }
   })
@@ -360,13 +377,15 @@ fn execute_delete_batch(
           Ok(bson.Int32(n)) -> n
           _ -> 0
         }
-        Ok(BulkWriteResult(
-          inserted: 0,
-          matched: 0,
-          modified: 0,
-          deleted:,
-          upserted: [],
-        ))
+        Ok(
+          BulkWriteResult(
+            inserted: 0,
+            matched: 0,
+            modified: 0,
+            deleted:,
+            upserted: [],
+          ),
+        )
       }
     }
   })

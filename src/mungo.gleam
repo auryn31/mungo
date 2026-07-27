@@ -1,10 +1,10 @@
+import mungo/admin
+import mungo/bulk
+import mungo/change_stream
 import mungo/client
 import mungo/crud
 import mungo/cursor
-import mungo/bulk
-import mungo/admin
 import mungo/session
-import mungo/change_stream
 import mungo/topology
 
 pub type Message =

@@ -8,9 +8,12 @@ import gleam/result
 import mug
 
 pub fn connect(host: String, port: Int, timeout: Int) {
-  mug.connect(
-    mug.ConnectionOptions(host:, port:, timeout:, ip_version_preference: mug.Ipv4Only),
-  )
+  mug.connect(mug.ConnectionOptions(
+    host:,
+    port:,
+    timeout:,
+    ip_version_preference: mug.Ipv4Only,
+  ))
 }
 
 pub fn execute(socket: mug.Socket, packet: BitArray, timeout: Int) {

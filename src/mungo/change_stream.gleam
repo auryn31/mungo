@@ -57,18 +57,20 @@ pub fn watch(
       options,
       [
         #("watch", bson.String(collection.name)),
-        #("pipeline", bson.Array(list.map(pipeline, fn(p) { bson.Document(dict.from_list([p])) }))),
+        #(
+          "pipeline",
+          bson.Array(
+            list.map(pipeline, fn(p) { bson.Document(dict.from_list([p])) }),
+          ),
+        ),
       ],
       fn(acc, opt) {
         case opt {
-          ResumeAfter(token) ->
-            list.key_set(acc, "resumeAfter", token)
-          StartAfter(token) ->
-            list.key_set(acc, "startAfter", token)
+          ResumeAfter(token) -> list.key_set(acc, "resumeAfter", token)
+          StartAfter(token) -> list.key_set(acc, "startAfter", token)
           FullDocument(mode) ->
             list.key_set(acc, "fullDocument", bson.String(mode))
-          BatchSize(size) ->
-            list.key_set(acc, "batchSize", bson.Int32(size))
+          BatchSize(size) -> list.key_set(acc, "batchSize", bson.Int32(size))
           MaxAwaitTimeMS(ms) ->
             list.key_set(acc, "maxAwaitTimeMS", bson.Int64(ms))
         }
@@ -173,7 +175,10 @@ fn to_list_internal(stream, storage, timeout) {
   }
 }
 
-fn get_more(stream: ChangeStream, timeout: Int) -> Result(ChangeStream, error.Error) {
+fn get_more(
+  stream: ChangeStream,
+  timeout: Int,
+) -> Result(ChangeStream, error.Error) {
   let cmd = [
     #("getMore", bson.Int64(stream.id)),
     #("collection", bson.String(stream.collection.name)),

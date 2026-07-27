@@ -44,9 +44,7 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
     case connect(uri, pool_size, timeout) {
       Ok(client) -> {
         let topology_interval = 10_000
-        process.spawn(fn() {
-          do_topology_poll_loop(subj, topology_interval)
-        })
+        process.spawn(fn() { do_topology_poll_loop(subj, topology_interval) })
         actor.initialised(client)
         |> actor.returning(subj)
         |> Ok
@@ -82,7 +80,12 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
         let cmd = case uuid.from_bit_array(session_id) {
           Ok(uid) ->
             cmd
-            |> list.key_set("lsid", bson.Document(dict.from_list([#("id", bson.Binary(bson.UUID(uid)))])))
+            |> list.key_set(
+              "lsid",
+              bson.Document(
+                dict.from_list([#("id", bson.Binary(bson.UUID(uid)))]),
+              ),
+            )
             |> list.key_set("txnNumber", bson.Int64(txn_number))
           Error(Nil) -> cmd
         }
@@ -98,16 +101,17 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
         }
       }
       SetReadPreference(pref) -> {
-        let new_client = Client(
-          client.db,
-          client.connections,
-          client.next_index,
-          client.pool_size,
-          client.use_tls,
-          client.topology,
-          client.replica_set_name,
-          pref,
-        )
+        let new_client =
+          Client(
+            client.db,
+            client.connections,
+            client.next_index,
+            client.pool_size,
+            client.use_tls,
+            client.topology,
+            client.replica_set_name,
+            pref,
+          )
         actor.continue(new_client)
       }
       PollTopology -> {
@@ -120,10 +124,7 @@ pub fn start(uri: String, pool_size: Int, timeout: Int) {
   |> actor.start
 }
 
-fn do_topology_poll_loop(
-  subj: process.Subject(Message),
-  interval: Int,
-) {
+fn do_topology_poll_loop(subj: process.Subject(Message), interval: Int) {
   process.send(subj, PollTopology)
   process.sleep(interval)
   do_topology_poll_loop(subj, interval)
@@ -155,7 +156,11 @@ pub type Collection {
   Collection(name: String, db: String, client: process.Subject(Message))
 }
 
-fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Error) {
+fn connect(
+  uri: String,
+  pool_size: Int,
+  timeout: Int,
+) -> Result(Client, error.Error) {
   use info <- result.try(parse_connection_string(uri))
 
   case info {
@@ -178,9 +183,20 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
                 })
             })
 
-            use hello_reply <- result.try(send_cmd(socket, db, [#("hello", bson.Int32(1))], timeout))
-            let server_desc = topology.parse_hello_reply(hello_reply, host.0, host.1)
-            Ok(Connection(socket, server_desc.server_type == topology.RsPrimary, host.0, host.1))
+            use hello_reply <- result.try(send_cmd(
+              socket,
+              db,
+              [#("hello", bson.Int32(1))],
+              timeout,
+            ))
+            let server_desc =
+              topology.parse_hello_reply(hello_reply, host.0, host.1)
+            Ok(Connection(
+              socket,
+              server_desc.server_type == topology.RsPrimary,
+              host.0,
+              host.1,
+            ))
           })
         })
         |> result.map(list.flatten),
@@ -188,17 +204,18 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
 
       let initial_topo =
         list.fold(connections, topology.empty(), fn(topo, conn) {
-          let server_desc = topology.ServerDescription(
-            host: conn.host,
-            port: conn.port,
-            server_type: case conn.primary {
-              True -> topology.RsPrimary
-              False -> topology.Standalone
-            },
-            replica_set_name: replica_set_name,
-            is_healthy: True,
-            tags: dict.new(),
-          )
+          let server_desc =
+            topology.ServerDescription(
+              host: conn.host,
+              port: conn.port,
+              server_type: case conn.primary {
+                True -> topology.RsPrimary
+                False -> topology.Standalone
+              },
+              replica_set_name: replica_set_name,
+              is_healthy: True,
+              tags: dict.new(),
+            )
           topology.update_topology(topo, server_desc)
         })
 
@@ -235,11 +252,18 @@ fn connect(uri: String, pool_size: Int, timeout: Int) -> Result(Client, error.Er
   }
 }
 
-pub fn collection(client: process.Subject(Message), name: String) -> Collection {
+pub fn collection(
+  client: process.Subject(Message),
+  name: String,
+) -> Collection {
   Collection(name, "", client)
 }
 
-pub fn collection_on_db(client: process.Subject(Message), name: String, db: String) -> Collection {
+pub fn collection_on_db(
+  client: process.Subject(Message),
+  name: String,
+  db: String,
+) -> Collection {
   Collection(name, db, client)
 }
 
@@ -288,7 +312,10 @@ pub fn execute_command_with_session(
     "" -> cmd
     db -> list.key_set(cmd, "$db", bson.String(db))
   }
-  process.send(collection.client, SessionCommand(cmd, reply, session_id, txn_number))
+  process.send(
+    collection.client,
+    SessionCommand(cmd, reply, session_id, txn_number),
+  )
   case process.receive(from: reply, within: timeout) {
     Ok(reply) -> reply
     Error(Nil) -> Error(error.ActorError)
@@ -301,7 +328,16 @@ fn execute(
   timeout: Int,
 ) -> Result(#(dict.Dict(String, bson.Value), Client), error.Error) {
   case client {
-    Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) -> {
+    Client(
+      name,
+      connections,
+      index,
+      pool_size,
+      use_tls,
+      topo,
+      replica_set_name,
+      pref,
+    ) -> {
       let candidate_connections = case pref {
         topology.Primary -> list.filter(connections, fn(c) { c.primary })
         topology.PrimaryPreferred -> {
@@ -335,7 +371,17 @@ fn execute(
           let Connection(socket, _, _, _) = connection
 
           let next_index = index + 1
-          let client = Client(name, connections, next_index, pool_size, use_tls, topo, replica_set_name, pref)
+          let client =
+            Client(
+              name,
+              connections,
+              next_index,
+              pool_size,
+              use_tls,
+              topo,
+              replica_set_name,
+              pref,
+            )
 
           case send_cmd(socket, name, cmd, timeout) {
             Ok(reply) ->
@@ -344,7 +390,8 @@ fn execute(
                 dict.get(reply, "errmsg"),
                 dict.get(reply, "code")
               {
-                Ok(bson.Double(0.0)), Ok(bson.String(msg)), Ok(bson.Int32(code)) -> {
+                Ok(bson.Double(0.0)), Ok(bson.String(msg)), Ok(bson.Int32(code))
+                -> {
                   case list.key_find(error.code_to_server_error, code) {
                     Ok(error_constructor) -> {
                       let server_error = error_constructor(msg)
@@ -367,22 +414,29 @@ fn execute(
                                         dict.get(reply, "code")
                                       {
                                         Ok(bson.Double(0.0)),
-                                        Ok(bson.String(msg)),
-                                        Ok(bson.Int32(code))
+                                          Ok(bson.String(msg)),
+                                          Ok(bson.Int32(code))
                                         -> {
-                                          case list.key_find(
-                                            error.code_to_server_error,
-                                            code,
-                                          ) {
-                                            Ok(err) -> Error(error.ServerError(err(msg)))
-                                            Error(Nil) -> Error(error.ServerError(server_error))
+                                          case
+                                            list.key_find(
+                                              error.code_to_server_error,
+                                              code,
+                                            )
+                                          {
+                                            Ok(err) ->
+                                              Error(error.ServerError(err(msg)))
+                                            Error(Nil) ->
+                                              Error(error.ServerError(
+                                                server_error,
+                                              ))
                                           }
                                         }
                                         _, _, _ -> Ok(#(reply, refreshed))
                                       }
                                     Error(err) -> Error(err)
                                   }
-                                Error(_) -> Error(error.ServerError(server_error))
+                                Error(_) ->
+                                  Error(error.ServerError(server_error))
                               }
                             }
 
@@ -395,15 +449,19 @@ fn execute(
                                     dict.get(reply, "code")
                                   {
                                     Ok(bson.Double(0.0)),
-                                    Ok(bson.String(msg)),
-                                    Ok(bson.Int32(code))
+                                      Ok(bson.String(msg)),
+                                      Ok(bson.Int32(code))
                                     -> {
-                                      case list.key_find(
-                                        error.code_to_server_error,
-                                        code,
-                                      ) {
-                                        Ok(err) -> Error(error.ServerError(err(msg)))
-                                        Error(Nil) -> Error(error.ServerError(server_error))
+                                      case
+                                        list.key_find(
+                                          error.code_to_server_error,
+                                          code,
+                                        )
+                                      {
+                                        Ok(err) ->
+                                          Error(error.ServerError(err(msg)))
+                                        Error(Nil) ->
+                                          Error(error.ServerError(server_error))
                                       }
                                     }
                                     _, _, _ -> Ok(#(reply, client))
@@ -427,7 +485,9 @@ fn execute(
   }
 }
 
-fn find_primary(client: Client) -> Result(#(DriverSocket, Client), error.Error) {
+fn find_primary(
+  client: Client,
+) -> Result(#(DriverSocket, Client), error.Error) {
   let Client(_, connections, _, _, _, _, _, _) = client
   let primary_connections =
     list.filter(connections, fn(connection) { connection.primary })
@@ -439,31 +499,44 @@ fn find_primary(client: Client) -> Result(#(DriverSocket, Client), error.Error) 
 }
 
 fn poll_topology(client: Client, timeout: Int) -> Client {
-  let Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) =
-    client
+  let Client(
+    name,
+    connections,
+    index,
+    pool_size,
+    use_tls,
+    topo,
+    replica_set_name,
+    pref,
+  ) = client
 
   let result =
     list.fold(connections, #(topology.empty(), []), fn(acc, connection) {
       let #(topo, conns) = acc
-      case send_cmd(connection.socket, name, [#("hello", bson.Int32(1))], timeout) {
+      case
+        send_cmd(connection.socket, name, [#("hello", bson.Int32(1))], timeout)
+      {
         Ok(reply) -> {
-          let server_desc = topology.parse_hello_reply(reply, connection.host, connection.port)
+          let server_desc =
+            topology.parse_hello_reply(reply, connection.host, connection.port)
           let new_topo = topology.update_topology(topo, server_desc)
-          let new_conn = Connection(
-            connection.socket,
-            server_desc.server_type == topology.RsPrimary,
-            connection.host,
-            connection.port,
-          )
+          let new_conn =
+            Connection(
+              connection.socket,
+              server_desc.server_type == topology.RsPrimary,
+              connection.host,
+              connection.port,
+            )
           #(new_topo, list.append(conns, [new_conn]))
         }
         Error(_) -> {
-          let new_conn = Connection(
-            connection.socket,
-            False,
-            connection.host,
-            connection.port,
-          )
+          let new_conn =
+            Connection(
+              connection.socket,
+              False,
+              connection.host,
+              connection.port,
+            )
           #(topo, list.append(conns, [new_conn]))
         }
       }
@@ -474,14 +547,32 @@ fn poll_topology(client: Client, timeout: Int) -> Client {
     _ -> topo
   }
 
-  Client(name, result.1, index, pool_size, use_tls, new_topo, replica_set_name, pref)
+  Client(
+    name,
+    result.1,
+    index,
+    pool_size,
+    use_tls,
+    new_topo,
+    replica_set_name,
+    pref,
+  )
 }
 
 fn refresh_connections(
   client: Client,
   timeout: Int,
 ) -> Result(Client, error.Error) {
-  let Client(name, connections, index, pool_size, use_tls, topo, replica_set_name, pref) = client
+  let Client(
+    name,
+    connections,
+    index,
+    pool_size,
+    use_tls,
+    topo,
+    replica_set_name,
+    pref,
+  ) = client
   use refreshed <- result.try(
     list.try_map(connections, fn(connection) {
       use is_primary <- result.try(is_primary(
@@ -490,10 +581,24 @@ fn refresh_connections(
         timeout,
         use_tls,
       ))
-      Ok(Connection(connection.socket, is_primary, connection.host, connection.port))
+      Ok(Connection(
+        connection.socket,
+        is_primary,
+        connection.host,
+        connection.port,
+      ))
     }),
   )
-  Ok(Client(name, refreshed, index, pool_size, use_tls, topo, replica_set_name, pref))
+  Ok(Client(
+    name,
+    refreshed,
+    index,
+    pool_size,
+    use_tls,
+    topo,
+    replica_set_name,
+    pref,
+  ))
 }
 
 fn connect_error_to_error(err: mug.ConnectError) -> mug.Error {
@@ -632,10 +737,8 @@ fn normalize_ok(
   reply: dict.Dict(String, bson.Value),
 ) -> dict.Dict(String, bson.Value) {
   case dict.get(reply, "ok") {
-    Ok(bson.Int32(n)) ->
-      dict.insert(reply, "ok", bson.Double(int.to_float(n)))
-    Ok(bson.Int64(n)) ->
-      dict.insert(reply, "ok", bson.Double(int.to_float(n)))
+    Ok(bson.Int32(n)) -> dict.insert(reply, "ok", bson.Double(int.to_float(n)))
+    Ok(bson.Int64(n)) -> dict.insert(reply, "ok", bson.Double(int.to_float(n)))
     _ -> reply
   }
 }
@@ -677,9 +780,7 @@ fn resolve_srv(uri: String) -> Result(String, error.Error) {
     [opts, txt_opts, "tls=true"]
     |> list.filter(fn(s) { s != "" })
     |> string.join("&")
-  Ok(
-    "mongodb://" <> auth_prefix <> host_string <> "/" <> db <> "?" <> merged,
-  )
+  Ok("mongodb://" <> auth_prefix <> host_string <> "/" <> db <> "?" <> merged)
 }
 
 fn parse_connection_string(uri: String) {

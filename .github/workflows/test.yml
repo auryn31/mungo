@@ -18,3 +18,18 @@ jobs:
           rebar3-version: '3'
       - run: gleam test
       - run: gleam format --check src test
+
+  replset:
+    runs-on: ubuntu-latest
+    continue-on-error: true # remove once the replica-set job is proven green
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          gleam-version: '1.17'
+          rebar3-version: '3'
+      # Start the 3-node replica set (keyfile auth) so the replset_* tests run
+      # against a real cluster instead of skipping.
+      - run: ./scripts/replset-up.sh
+      - run: gleam test

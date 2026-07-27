@@ -1,48 +1,55 @@
+# 3-node MongoDB replica set for the `replset_*` integration tests.
+#
+# Uses host networking so the replica set advertises localhost:27017-27019 —
+# addresses reachable both between the nodes and from the test process, which
+# the MongoDB driver needs after topology discovery. This works on Linux
+# (incl. GitHub Actions runners); on macOS/Windows Docker Desktop host
+# networking is limited, so the tests there just skip.
+#
+# Bring it up locally with `./scripts/replset-up.sh` (generates the keyfile,
+# starts the nodes, initiates the set and creates the root user).
 services:
   mongo1:
     image: mongo:7
     container_name: mungo-rs1
-    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
-    ports:
-      - "27017:27017"
+    network_mode: host
+    command: ["--replSet", "mungo-rs", "--port", "27017", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
     volumes:
-      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key:ro
       - rs1:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   mongo2:
     image: mongo:7
     container_name: mungo-rs2
-    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
-    ports:
-      - "27018:27017"
+    network_mode: host
+    command: ["--replSet", "mungo-rs", "--port", "27018", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
     volumes:
-      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key:ro
       - rs2:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27018", "--eval", "db.adminCommand('ping')"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   mongo3:
     image: mongo:7
     container_name: mungo-rs3
-    command: ["--replSet", "mungo-rs", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
-    ports:
-      - "27019:27017"
+    network_mode: host
+    command: ["--replSet", "mungo-rs", "--port", "27019", "--bind_ip_all", "--keyFile", "/etc/mongo/replica.key"]
     volumes:
-      - ./docker/mongo/keyfile:/etc/mongo/replica.key
+      - ./docker/mongo/keyfile:/etc/mongo/replica.key:ro
       - rs3:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27019", "--eval", "db.adminCommand('ping')"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
 volumes:
   rs1:

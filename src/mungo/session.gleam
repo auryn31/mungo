@@ -23,10 +23,7 @@ fn execute_command(
   timeout: Int,
 ) -> Result(dict.Dict(String, bson.Value), error.Error) {
   let reply = process.new_subject()
-  process.send(
-    collection.client,
-    client.Command(cmd, reply),
-  )
+  process.send(collection.client, client.Command(cmd, reply))
   case process.receive(from: reply, within: timeout) {
     Ok(reply) -> reply
     Error(Nil) -> Error(error.ActorError)
@@ -42,16 +39,14 @@ pub fn start(
 
   use reply <- result.try(execute_command(collection, cmd, timeout))
 
-  use id <- result.try(
-    case dict.get(reply, "id") {
-      Ok(bson.Document(id_doc)) ->
-        case dict.get(id_doc, "id") {
-          Ok(bson.Binary(bson.UUID(uid))) -> Ok(bison_uuid.to_bit_array(uid))
-          _ -> Error(error.StructureError)
-        }
-      _ -> Error(error.StructureError)
-    },
-  )
+  use id <- result.try(case dict.get(reply, "id") {
+    Ok(bson.Document(id_doc)) ->
+      case dict.get(id_doc, "id") {
+        Ok(bson.Binary(bson.UUID(uid))) -> Ok(bison_uuid.to_bit_array(uid))
+        _ -> Error(error.StructureError)
+      }
+    _ -> Error(error.StructureError)
+  })
 
   Ok(Session(client: client_subj, session_id: id, txn_number: 0, active: False))
 }
@@ -68,9 +63,11 @@ pub fn start_transaction(session: Session) -> Session {
 fn lsid_dict(session_id: BitArray) {
   case bison_uuid.from_bit_array(session_id) {
     Ok(uid) ->
-      bson.Document(dict.from_list([
-        #("id", bson.Binary(bson.UUID(uid))),
-      ]))
+      bson.Document(
+        dict.from_list([
+          #("id", bson.Binary(bson.UUID(uid))),
+        ]),
+      )
     Error(Nil) -> bson.Document(dict.new())
   }
 }
@@ -85,7 +82,10 @@ pub fn commit_transaction(
     #("lsid", lsid_dict(session.session_id)),
     #("txnNumber", bson.Int64(session.txn_number)),
     #("autocommit", bson.Boolean(False)),
-    #("readConcern", bson.Document(dict.from_list([#("level", bson.String("snapshot"))]))),
+    #(
+      "readConcern",
+      bson.Document(dict.from_list([#("level", bson.String("snapshot"))])),
+    ),
   ]
 
   client.execute_command(collection, cmd, timeout)

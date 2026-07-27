@@ -91,7 +91,11 @@ pub fn parse_hello_reply(
   }
 
   let server_type = case
-    ok, is_writable_primary, is_secondary, is_arbiter, is_replica_set_member
+    ok,
+    is_writable_primary,
+    is_secondary,
+    is_arbiter,
+    is_replica_set_member
   {
     False, _, _, _, _ -> Standalone
     True, True, _, _, _ -> RsPrimary
@@ -221,8 +225,7 @@ pub fn select_server(
           })
       }
     }
-    Nearest ->
-      list.filter(topology.servers, fn(s) { s.is_healthy })
+    Nearest -> list.filter(topology.servers, fn(s) { s.is_healthy })
   }
 
   list.first(candidates) |> result_to_option

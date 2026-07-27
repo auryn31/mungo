@@ -443,8 +443,8 @@ fn update(
       dict.get(reply, "upserted"),
       dict.get(reply, "writeErrors")
     {
-      Ok(bson.Int32(n)), Ok(bson.Int32(modified)), Ok(bson.Array(upserted)), _ ->
-        Ok(UpdateResult(n, modified, upserted))
+      Ok(bson.Int32(n)), Ok(bson.Int32(modified)), Ok(bson.Array(upserted)), _
+      -> Ok(UpdateResult(n, modified, upserted))
 
       Ok(bson.Int32(n)), Ok(bson.Int32(modified)), _, _ ->
         Ok(UpdateResult(n, modified, []))

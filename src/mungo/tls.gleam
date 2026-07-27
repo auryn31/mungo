@@ -1,6 +1,10 @@
 pub type TlsSocket
 
-pub fn connect(host: String, port: Int, timeout: Int) -> Result(TlsSocket, String) {
+pub fn connect(
+  host: String,
+  port: Int,
+  timeout: Int,
+) -> Result(TlsSocket, String) {
   tls_connect(host, port, timeout)
 }
 
@@ -16,7 +20,11 @@ pub fn execute(
 }
 
 @external(erlang, "mungo_tls_ffi", "connect")
-fn tls_connect(host: String, port: Int, timeout: Int) -> Result(TlsSocket, String)
+fn tls_connect(
+  host: String,
+  port: Int,
+  timeout: Int,
+) -> Result(TlsSocket, String)
 
 @external(erlang, "mungo_tls_ffi", "send")
 fn tls_send(socket: TlsSocket, packet: BitArray) -> Result(Nil, String)

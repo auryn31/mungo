@@ -1,23 +1,24 @@
-import gleam/bit_array
-import gleam/dict
-import gleam/erlang/process
-import gleam/int
-import gleam/list
-import gleam/option
 import birl
 import bison/bson
 import bison/generic
 import bison/md5
 import bison/object_id
 import bison/uuid
+import gleam/bit_array
+import gleam/dict
+import gleam/erlang/process
+import gleam/int
+import gleam/list
+import gleam/option
+import gleam/result
 import gleeunit/should
+import mungo/admin
 import mungo/aggregation
+import mungo/bulk
 import mungo/client
 import mungo/crud
 import mungo/cursor
 import mungo/session
-import mungo/bulk
-import mungo/admin
 import mungo/topology
 import testcontainer
 import testcontainer/container
@@ -122,10 +123,7 @@ pub fn bson_special_chars_test() {
     let doc = [#("val", bson.String("line1\nline2\ttab"))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
-    should.equal(
-      dict.get(fields, "val"),
-      Ok(bson.String("line1\nline2\ttab")),
-    )
+    should.equal(dict.get(fields, "val"), Ok(bson.String("line1\nline2\ttab")))
     Ok(Nil)
   })
 }
@@ -185,10 +183,7 @@ pub fn bson_int64_test() {
     let doc = [#("val", bson.Int64(9_007_199_254_740_993))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
-    should.equal(
-      dict.get(fields, "val"),
-      Ok(bson.Int64(9_007_199_254_740_993)),
-    )
+    should.equal(dict.get(fields, "val"), Ok(bson.Int64(9_007_199_254_740_993)))
     Ok(Nil)
   })
 }
@@ -271,13 +266,15 @@ pub fn bson_array_test() {
     let fields = find_doc(coll, [#("_id", id)])
     should.equal(
       dict.get(fields, "val"),
-      Ok(bson.Array([
-        bson.Int32(1),
-        bson.String("two"),
-        bson.Double(3.0),
-        bson.Boolean(True),
-        bson.Null,
-      ])),
+      Ok(
+        bson.Array([
+          bson.Int32(1),
+          bson.String("two"),
+          bson.Double(3.0),
+          bson.Boolean(True),
+          bson.Null,
+        ]),
+      ),
     )
     Ok(Nil)
   })
@@ -308,10 +305,12 @@ pub fn bson_nested_array_test() {
     let fields = find_doc(coll, [#("_id", id)])
     should.equal(
       dict.get(fields, "val"),
-      Ok(bson.Array([
-        bson.Array([bson.Int32(1), bson.Int32(2)]),
-        bson.Array([bson.Int32(3), bson.Int32(4)]),
-      ])),
+      Ok(
+        bson.Array([
+          bson.Array([bson.Int32(1), bson.Int32(2)]),
+          bson.Array([bson.Int32(3), bson.Int32(4)]),
+        ]),
+      ),
     )
     Ok(Nil)
   })
@@ -407,8 +406,7 @@ pub fn bson_binary_generic_test() {
     let doc = [#("val", bson.Binary(bson.Generic(data)))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
-    let assert Ok(bson.Binary(bson.Generic(returned))) =
-      dict.get(fields, "val")
+    let assert Ok(bson.Binary(bson.Generic(returned))) = dict.get(fields, "val")
     should.equal(generic.to_string(returned), Ok("hello binary"))
     Ok(Nil)
   })
@@ -421,8 +419,7 @@ pub fn bson_binary_uuid_test() {
     let doc = [#("val", bson.Binary(bson.UUID(id_val)))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
-    let assert Ok(bson.Binary(bson.UUID(returned))) =
-      dict.get(fields, "val")
+    let assert Ok(bson.Binary(bson.UUID(returned))) = dict.get(fields, "val")
     should.equal(
       uuid.to_string(returned),
       "550e8400-e29b-41d4-a716-446655440000",
@@ -433,17 +430,12 @@ pub fn bson_binary_uuid_test() {
 
 pub fn bson_binary_md5_test() {
   with_mongo("t_binary_md5", fn(coll) {
-    let assert Ok(md5_val) =
-      md5.from_string("d41d8cd98f00b204e9800998ecf8427e")
+    let assert Ok(md5_val) = md5.from_string("d41d8cd98f00b204e9800998ecf8427e")
     let doc = [#("val", bson.Binary(bson.MD5(md5_val)))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
-    let assert Ok(bson.Binary(bson.MD5(returned))) =
-      dict.get(fields, "val")
-    should.equal(
-      md5.to_string(returned),
-      "d41d8cd98f00b204e9800998ecf8427e",
-    )
+    let assert Ok(bson.Binary(bson.MD5(returned))) = dict.get(fields, "val")
+    should.equal(md5.to_string(returned), "d41d8cd98f00b204e9800998ecf8427e")
     Ok(Nil)
   })
 }
@@ -475,12 +467,7 @@ pub fn find_nonexistent_filter_test() {
     let doc = [#("name", bson.String("Alice"))]
     let assert Ok(_) = crud.insert_one(coll, doc, timeout)
     let assert Ok(option.None) =
-      crud.find_one(
-        coll,
-        [#("name", bson.String("DoesNotExist"))],
-        [],
-        timeout,
-      )
+      crud.find_one(coll, [#("name", bson.String("DoesNotExist"))], [], timeout)
     Ok(Nil)
   })
 }
@@ -536,8 +523,7 @@ pub fn update_with_upsert_creates_doc_test() {
 
 pub fn large_array_test() {
   with_mongo("e_large_array", fn(coll) {
-    let items =
-      make_range(0, 99) |> list.map(fn(i) { bson.Int32(i) })
+    let items = make_range(0, 99) |> list.map(fn(i) { bson.Int32(i) })
     let doc = [#("items", bson.Array(items))]
     let assert Ok(id) = crud.insert_one(coll, doc, timeout)
     let fields = find_doc(coll, [#("_id", id)])
@@ -631,8 +617,7 @@ pub fn count_empty_collection_test() {
 pub fn count_with_no_match_test() {
   with_mongo("e_count_nomatch", fn(coll) {
     let assert Ok(_) = crud.insert_one(coll, [#("x", bson.Int32(1))], timeout)
-    let assert Ok(count) =
-      crud.count(coll, [#("x", bson.Int32(999))], timeout)
+    let assert Ok(count) = crud.count(coll, [#("x", bson.Int32(999))], timeout)
     should.equal(count, 0)
     Ok(Nil)
   })
@@ -704,9 +689,11 @@ pub fn find_comparison_operators_test() {
         [
           #(
             "v",
-            bson.Document(dict.from_list([
-              #("$in", bson.Array([bson.Int32(10), bson.Int32(50)])),
-            ])),
+            bson.Document(
+              dict.from_list([
+                #("$in", bson.Array([bson.Int32(10), bson.Int32(50)])),
+              ]),
+            ),
           ),
         ],
         [],
@@ -720,9 +707,11 @@ pub fn find_comparison_operators_test() {
         [
           #(
             "v",
-            bson.Document(dict.from_list([
-              #("$nin", bson.Array([bson.Int32(10), bson.Int32(50)])),
-            ])),
+            bson.Document(
+              dict.from_list([
+                #("$nin", bson.Array([bson.Int32(10), bson.Int32(50)])),
+              ]),
+            ),
           ),
         ],
         [],
@@ -847,7 +836,8 @@ pub fn find_with_skip_test() {
 pub fn find_with_limit_test() {
   with_mongo("opts_limit", fn(coll) {
     let docs =
-      make_range(1, 5) |> list.map(fn(i) { [#("name", bson.String(int.to_string(i)))] })
+      make_range(1, 5)
+      |> list.map(fn(i) { [#("name", bson.String(int.to_string(i)))] })
     let assert Ok(_) = crud.insert_many(coll, docs, timeout)
 
     let assert Ok(c) =
@@ -888,8 +878,7 @@ pub fn find_with_projection_test() {
 
 pub fn find_with_skip_and_limit_test() {
   with_mongo("opts_skip_lim", fn(coll) {
-    let docs =
-      make_range(1, 10) |> list.map(fn(i) { [#("n", bson.Int32(i))] })
+    let docs = make_range(1, 10) |> list.map(fn(i) { [#("n", bson.Int32(i))] })
     let assert Ok(_) = crud.insert_many(coll, docs, timeout)
 
     let assert Ok(c) =
@@ -1005,10 +994,7 @@ pub fn update_min_test() {
         coll,
         [#("_id", id)],
         [
-          #(
-            "$min",
-            bson.Document(dict.from_list([#("val", bson.Int32(5))])),
-          ),
+          #("$min", bson.Document(dict.from_list([#("val", bson.Int32(5))]))),
         ],
         [],
         timeout,
@@ -1030,10 +1016,7 @@ pub fn update_min_no_change_test() {
         coll,
         [#("_id", id)],
         [
-          #(
-            "$min",
-            bson.Document(dict.from_list([#("val", bson.Int32(20))])),
-          ),
+          #("$min", bson.Document(dict.from_list([#("val", bson.Int32(20))]))),
         ],
         [],
         timeout,
@@ -1053,10 +1036,7 @@ pub fn update_max_test() {
         coll,
         [#("_id", id)],
         [
-          #(
-            "$max",
-            bson.Document(dict.from_list([#("val", bson.Int32(20))])),
-          ),
+          #("$max", bson.Document(dict.from_list([#("val", bson.Int32(20))]))),
         ],
         [],
         timeout,
@@ -1080,9 +1060,11 @@ pub fn update_rename_test() {
         [
           #(
             "$rename",
-            bson.Document(dict.from_list([
-              #("old_name", bson.String("new_name")),
-            ])),
+            bson.Document(
+              dict.from_list([
+                #("old_name", bson.String("new_name")),
+              ]),
+            ),
           ),
         ],
         [],
@@ -1136,17 +1118,21 @@ pub fn update_push_each_test() {
         [
           #(
             "$push",
-            bson.Document(dict.from_list([
-              #(
-                "tags",
-                bson.Document(dict.from_list([
-                  #(
-                    "$each",
-                    bson.Array([bson.String("b"), bson.String("c")]),
+            bson.Document(
+              dict.from_list([
+                #(
+                  "tags",
+                  bson.Document(
+                    dict.from_list([
+                      #(
+                        "$each",
+                        bson.Array([bson.String("b"), bson.String("c")]),
+                      ),
+                    ]),
                   ),
-                ])),
-              ),
-            ])),
+                ),
+              ]),
+            ),
           ),
         ],
         [],
@@ -1156,11 +1142,13 @@ pub fn update_push_each_test() {
     let fields = find_doc(coll, [#("_id", id)])
     should.equal(
       dict.get(fields, "tags"),
-      Ok(bson.Array([
-        bson.String("a"),
-        bson.String("b"),
-        bson.String("c"),
-      ])),
+      Ok(
+        bson.Array([
+          bson.String("a"),
+          bson.String("b"),
+          bson.String("c"),
+        ]),
+      ),
     )
     Ok(Nil)
   })
@@ -1262,11 +1250,13 @@ pub fn update_set_multiple_fields_test() {
         [
           #(
             "$set",
-            bson.Document(dict.from_list([
-              #("a", bson.Int32(99)),
-              #("b", bson.String("new")),
-              #("c", bson.Boolean(True)),
-            ])),
+            bson.Document(
+              dict.from_list([
+                #("a", bson.Int32(99)),
+                #("b", bson.String("new")),
+                #("c", bson.Boolean(True)),
+              ]),
+            ),
           ),
         ],
         [],
@@ -1291,10 +1281,7 @@ pub fn update_insert_new_field_test() {
         coll,
         [#("_id", id)],
         [
-          #(
-            "$set",
-            bson.Document(dict.from_list([#("age", bson.Int32(30))])),
-          ),
+          #("$set", bson.Document(dict.from_list([#("age", bson.Int32(30))]))),
         ],
         [],
         timeout,
@@ -1350,10 +1337,7 @@ pub fn update_push_to_nonexistent_array_test() {
       )
 
     let fields = find_doc(coll, [#("_id", id)])
-    should.equal(
-      dict.get(fields, "tags"),
-      Ok(bson.Array([bson.String("new")])),
-    )
+    should.equal(dict.get(fields, "tags"), Ok(bson.Array([bson.String("new")])))
     Ok(Nil)
   })
 }
@@ -1369,10 +1353,15 @@ pub fn create_index_test() {
       #(
         "indexes",
         bson.Array([
-          bson.Document(dict.from_list([
-            #("key", bson.Document(dict.from_list([#("email", bson.Int32(1))]))),
-            #("name", bson.String("email_idx")),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #(
+                "key",
+                bson.Document(dict.from_list([#("email", bson.Int32(1))])),
+              ),
+              #("name", bson.String("email_idx")),
+            ]),
+          ),
         ]),
       ),
     ]
@@ -1394,11 +1383,16 @@ pub fn create_unique_index_test() {
       #(
         "indexes",
         bson.Array([
-          bson.Document(dict.from_list([
-            #("key", bson.Document(dict.from_list([#("code", bson.Int32(1))]))),
-            #("name", bson.String("code_unique")),
-            #("unique", bson.Boolean(True)),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #(
+                "key",
+                bson.Document(dict.from_list([#("code", bson.Int32(1))])),
+              ),
+              #("name", bson.String("code_unique")),
+              #("unique", bson.Boolean(True)),
+            ]),
+          ),
         ]),
       ),
     ]
@@ -1421,16 +1415,20 @@ pub fn create_compound_index_test() {
       #(
         "indexes",
         bson.Array([
-          bson.Document(dict.from_list([
-            #(
-              "key",
-              bson.Document(dict.from_list([
-                #("last_name", bson.Int32(1)),
-                #("first_name", bson.Int32(1)),
-              ])),
-            ),
-            #("name", bson.String("name_idx")),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #(
+                "key",
+                bson.Document(
+                  dict.from_list([
+                    #("last_name", bson.Int32(1)),
+                    #("first_name", bson.Int32(1)),
+                  ]),
+                ),
+              ),
+              #("name", bson.String("name_idx")),
+            ]),
+          ),
         ]),
       ),
     ]
@@ -1472,10 +1470,15 @@ pub fn drop_index_test() {
       #(
         "indexes",
         bson.Array([
-          bson.Document(dict.from_list([
-            #("key", bson.Document(dict.from_list([#("temp", bson.Int32(1))]))),
-            #("name", bson.String("temp_idx")),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #(
+                "key",
+                bson.Document(dict.from_list([#("temp", bson.Int32(1))])),
+              ),
+              #("name", bson.String("temp_idx")),
+            ]),
+          ),
         ]),
       ),
     ]
@@ -1564,9 +1567,11 @@ pub fn aggregation_group_avg_test() {
       |> aggregation.group([
         #(
           "_id",
-          bson.Document(dict.from_list([
-            #("category", bson.String("$category")),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #("category", bson.String("$category")),
+            ]),
+          ),
         ),
         #(
           "avg_val",
@@ -1586,9 +1591,21 @@ pub fn aggregation_group_avg_test() {
 pub fn aggregation_group_first_last_test() {
   with_mongo("agg_group_fstlst", fn(coll) {
     let docs = [
-      [#("grp", bson.String("x")), #("order", bson.Int32(1)), #("val", bson.String("first"))],
-      [#("grp", bson.String("x")), #("order", bson.Int32(2)), #("val", bson.String("mid"))],
-      [#("grp", bson.String("x")), #("order", bson.Int32(3)), #("val", bson.String("last"))],
+      [
+        #("grp", bson.String("x")),
+        #("order", bson.Int32(1)),
+        #("val", bson.String("first")),
+      ],
+      [
+        #("grp", bson.String("x")),
+        #("order", bson.Int32(2)),
+        #("val", bson.String("mid")),
+      ],
+      [
+        #("grp", bson.String("x")),
+        #("order", bson.Int32(3)),
+        #("val", bson.String("last")),
+      ],
     ]
     let assert Ok(_) = crud.insert_many(coll, docs, timeout)
 
@@ -1596,10 +1613,7 @@ pub fn aggregation_group_first_last_test() {
       aggregation.aggregate(coll, [], timeout)
       |> aggregation.sort([#("order", bson.Int32(1))])
       |> aggregation.group([
-        #(
-          "_id",
-          bson.Document(dict.from_list([#("grp", bson.String("$grp"))])),
-        ),
+        #("_id", bson.Document(dict.from_list([#("grp", bson.String("$grp"))]))),
         #(
           "first_val",
           bson.Document(dict.from_list([#("$first", bson.String("$val"))])),
@@ -1633,10 +1647,7 @@ pub fn aggregation_group_min_max_test() {
     let assert Ok(c) =
       aggregation.aggregate(coll, [], timeout)
       |> aggregation.group([
-        #(
-          "_id",
-          bson.Document(dict.from_list([#("grp", bson.String("$grp"))])),
-        ),
+        #("_id", bson.Document(dict.from_list([#("grp", bson.String("$grp"))]))),
         #(
           "min_v",
           bson.Document(dict.from_list([#("$min", bson.String("$v"))])),
@@ -1675,16 +1686,18 @@ pub fn aggregation_project_test() {
       |> aggregation.add_fields([
         #(
           "full_name",
-          bson.Document(dict.from_list([
-            #(
-              "$concat",
-              bson.Array([
-                bson.String("$first_name"),
-                bson.String(" "),
-                bson.String("$last_name"),
-              ]),
-            ),
-          ])),
+          bson.Document(
+            dict.from_list([
+              #(
+                "$concat",
+                bson.Array([
+                  bson.String("$first_name"),
+                  bson.String(" "),
+                  bson.String("$last_name"),
+                ]),
+              ),
+            ]),
+          ),
         ),
       ])
       |> aggregation.project([
@@ -1750,11 +1763,7 @@ pub fn aggregation_unwind_preserve_null_test() {
         timeout,
       )
     let assert Ok(_) =
-      crud.insert_one(
-        coll,
-        [#("name", bson.String("Charlie"))],
-        timeout,
-      )
+      crud.insert_one(coll, [#("name", bson.String("Charlie"))], timeout)
 
     let assert Ok(c) =
       aggregation.aggregate(coll, [], timeout)
@@ -1770,8 +1779,7 @@ pub fn aggregation_unwind_preserve_null_test() {
 
 pub fn aggregation_skip_limit_test() {
   with_mongo("agg_skip_lim", fn(coll) {
-    let docs =
-      make_range(1, 10) |> list.map(fn(i) { [#("n", bson.Int32(i))] })
+    let docs = make_range(1, 10) |> list.map(fn(i) { [#("n", bson.Int32(i))] })
     let assert Ok(_) = crud.insert_many(coll, docs, timeout)
 
     let assert Ok(c) =
@@ -1803,10 +1811,7 @@ pub fn aggregation_group_count_test() {
       aggregation.aggregate(coll, [], timeout)
       |> aggregation.group([
         #("_id", bson.Null),
-        #(
-          "count",
-          bson.Document(dict.from_list([#("$sum", bson.Int32(1))])),
-        ),
+        #("count", bson.Document(dict.from_list([#("$sum", bson.Int32(1))]))),
       ])
       |> aggregation.to_cursor
 
@@ -1933,8 +1938,7 @@ pub fn delete_many_no_match_test() {
 
 pub fn insert_delete_all_test() {
   with_mongo("w_ins_delall", fn(coll) {
-    let docs =
-      make_range(1, 3) |> list.map(fn(i) { [#("a", bson.Int32(i))] })
+    let docs = make_range(1, 3) |> list.map(fn(i) { [#("a", bson.Int32(i))] })
     let assert Ok(_) = crud.insert_many(coll, docs, timeout)
     let assert Ok(count) = crud.count_all(coll, timeout)
     should.equal(count, 3)
@@ -2006,7 +2010,9 @@ pub fn bulk_mixed_ops_test() {
       bulk.InsertOne([#("x", bson.Int32(2))]),
       bulk.UpdateOne(
         filter: [#("x", bson.Int32(1))],
-        update: [#("$set", bson.Document(dict.from_list([#("x", bson.Int32(10))])))],
+        update: [
+          #("$set", bson.Document(dict.from_list([#("x", bson.Int32(10))]))),
+        ],
         upsert: False,
       ),
       bulk.DeleteOne(filter: [#("x", bson.Int32(2))]),
@@ -2044,9 +2050,12 @@ pub fn list_collections_test() {
 
 pub fn distinct_test() {
   with_mongo("w_distinct", fn(coll) {
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
     let assert Ok(values) = crud.distinct(coll, "color", [], timeout)
     should.equal(list.length(values), 2)
     Ok(Nil)
@@ -2055,21 +2064,29 @@ pub fn distinct_test() {
 
 pub fn find_and_modify_test() {
   with_mongo("w_fam", fn(coll) {
-    let assert Ok(_) = crud.insert_one(coll, [
-      #("x", bson.Int32(1)),
-      #("y", bson.Int32(10)),
-    ], timeout)
-    let assert Ok(result) = crud.find_and_modify(
-      coll,
-      [#("x", bson.Int32(1))],
-      option.Some([#("$set", bson.Document(dict.from_list([#("y", bson.Int32(99))])))]),
-      option.None,
-      [],
-      False,
-      False,
-      True,
-      timeout,
-    )
+    let assert Ok(_) =
+      crud.insert_one(
+        coll,
+        [
+          #("x", bson.Int32(1)),
+          #("y", bson.Int32(10)),
+        ],
+        timeout,
+      )
+    let assert Ok(result) =
+      crud.find_and_modify(
+        coll,
+        [#("x", bson.Int32(1))],
+        option.Some([
+          #("$set", bson.Document(dict.from_list([#("y", bson.Int32(99))]))),
+        ]),
+        option.None,
+        [],
+        False,
+        False,
+        True,
+        timeout,
+      )
     case result {
       option.Some(bson.Document(fields)) -> {
         let assert Ok(bson.Int32(y)) = dict.get(fields, "y")
@@ -2085,15 +2102,33 @@ pub fn find_and_modify_test() {
 // Replica Set / Cluster Tests
 // ---------------------------------------------------------------------------
 
-const replset_url = "mongodb://root:root@localhost:27017,localhost:27018,localhost:27019/mungo_test?authSource=admin&replicaSet=mungo-rs"
+const default_replset_url = "mongodb://root:root@localhost:27017,localhost:27018,localhost:27019/mungo_test?authSource=admin&replicaSet=mungo-rs"
 
+// Replica-set connection string, overridable via MONGO_REPLSET_URL so the
+// tests can target a remote set, different ports, or a CI service instead of
+// the local docker-compose.replset.yml default.
+fn replset_url() -> String {
+  getenv("MONGO_REPLSET_URL") |> result.unwrap(default_replset_url)
+}
+
+@external(erlang, "getenv_ffi", "get")
+fn getenv(name: String) -> Result(String, Nil)
+
+// Runs f against the local 3-node replica set. If the set isn't running
+// (e.g. CI without docker-compose.replset.yml up), the test skips instead of
+// failing. Start it locally with `docker compose -f docker-compose.replset.yml up`.
 fn with_replset(
   name: String,
   f: fn(client.Collection) -> Result(a, tc_error.Error),
-) -> Result(a, tc_error.Error) {
-  let assert Ok(started) = client.start(replset_url, 2, timeout)
-  let coll = client.collection(started.data, name)
-  f(coll)
+) -> Nil {
+  case client.start(replset_url(), 2, timeout) {
+    Error(_) -> Nil
+    Ok(started) -> {
+      let coll = client.collection(started.data, name)
+      let _ = f(coll)
+      Nil
+    }
+  }
 }
 
 pub fn replset_insert_and_read_test() {
@@ -2161,9 +2196,12 @@ pub fn replset_delete_one_test() {
 
 pub fn replset_aggregation_test() {
   with_replset("t_replset_agg", fn(coll) {
-    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("status", bson.String("inactive"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("status", bson.String("active"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("status", bson.String("inactive"))], timeout)
     let assert Ok(c) =
       aggregation.aggregate(coll, [], timeout)
       |> aggregation.match([#("status", bson.String("active"))])
@@ -2195,9 +2233,12 @@ pub fn replset_bulk_insert_test() {
 
 pub fn replset_distinct_test() {
   with_replset("t_replset_distinct", fn(coll) {
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
-    let assert Ok(_) = crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("blue"))], timeout)
+    let assert Ok(_) =
+      crud.insert_one(coll, [#("color", bson.String("red"))], timeout)
     let assert Ok(values) = crud.distinct(coll, "color", [], timeout)
     should.equal(list.length(values), 2)
     Ok(Nil)
@@ -2211,7 +2252,9 @@ pub fn replset_find_and_modify_test() {
       crud.find_and_modify(
         coll,
         [#("x", bson.Int32(1))],
-        option.Some([#("$set", bson.Document(dict.from_list([#("x", bson.Int32(99))])))]),
+        option.Some([
+          #("$set", bson.Document(dict.from_list([#("x", bson.Int32(99))]))),
+        ]),
         option.None,
         [],
         False,

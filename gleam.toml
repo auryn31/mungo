@@ -26,5 +26,6 @@ gleam_yielder = ">= 1.1.0 and < 2.0.0"
 
 [dev-dependencies]
 gleeunit = "~> 1.2"
+birl = ">= 1.9.0 and < 2.0.0"
 testcontainer = { version = ">= 1.0.0 and < 2.0.0" }
 testcontainer_formulas = { version = ">= 1.0.0 and < 2.0.0" }

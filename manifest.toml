@@ -28,6 +28,7 @@ packages = [
 ]
 
 [requirements]
+birl = { version = ">= 1.9.0 and < 2.0.0" }
 bison = { git = "https://github.com/auryn31/bison.git", ref = "main" }
 gleam_crypto = { version = "~> 1.6" }
 gleam_deque = { version = ">= 1.0.0 and < 2.0.0" }

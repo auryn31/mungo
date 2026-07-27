@@ -9,12 +9,7 @@ import mungo/error
 import bison/bson
 
 pub type DatabaseInfo {
-  DatabaseInfo(
-    name: String,
-    size_on_disk: Int,
-    empty: Bool,
-    namespaces: Int,
-  )
+  DatabaseInfo(name: String, size_on_disk: Int, empty: Bool, namespaces: Int)
 }
 
 pub fn list_databases(
