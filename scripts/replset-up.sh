@@ -32,8 +32,10 @@ done
 
 # 4. Initiate the replica set (localhost exception applies before any user
 #    exists, and only from inside the node over localhost).
+#    db.hello() needs no auth, so it works whether or not a user exists yet;
+#    setName is only present once the set is initiated.
 docker exec mungo-rs1 mongosh --quiet --port 27017 --eval '
-  try { rs.status() } catch (e) {
+  if (!db.hello().setName) {
     rs.initiate({
       _id: "mungo-rs",
       members: [
@@ -54,11 +56,16 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-# 6. Create the root user (still under the localhost exception).
+# 6. Create the root user. The localhost exception permits creating the first
+#    user but NOT reading users (usersInfo), so we can't pre-check — just
+#    create and swallow the "already exists" error on local re-runs.
 docker exec mungo-rs1 mongosh --quiet --port 27017 --eval '
-  const admin = db.getSiblingDB("admin");
-  if (admin.getUser("root") === null) {
-    admin.createUser({ user: "root", pwd: "root", roles: [{ role: "root", db: "admin" }] });
+  try {
+    db.getSiblingDB("admin").createUser({
+      user: "root", pwd: "root", roles: [{ role: "root", db: "admin" }]
+    });
+  } catch (e) {
+    if (e.codeName !== "DuplicateKey" && !/already exists/i.test(e.message)) throw e;
   }
 '
 
